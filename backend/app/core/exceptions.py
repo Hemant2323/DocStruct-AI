@@ -55,16 +55,61 @@ class FileTooLargeError(ValidationError):
     code = "file_too_large"
 
 
-class StorageError(DocStructError):
-    """Reading from or writing to the file store failed."""
-
-    code = "storage_error"
-
-
 class ProcessingError(DocStructError):
     """Document processing failed after the file was accepted."""
 
     code = "processing_error"
+
+
+class CorruptFileError(ValidationError):
+    """The file is the declared type but is damaged and cannot be read."""
+
+    code = "corrupt_file"
+
+
+class EncryptedFileError(ValidationError):
+    """The file is password-protected, so its content cannot be reached."""
+
+    code = "encrypted_file"
+
+
+class EmptyDocumentError(ValidationError):
+    """The file was readable but contained no extractable content."""
+
+    code = "no_content"
+
+
+class ScannedDocumentError(ValidationError):
+    """The file is a scan or images, so text extraction would need OCR.
+
+    Raised rather than returning an empty result: a scanned PDF that silently produced
+    nothing would look identical to a successfully processed blank document.
+    """
+
+    code = "requires_ocr"
+
+
+class DocumentTooComplexError(ValidationError):
+    """The file exceeds a processing limit — too many pages, rows, or blocks."""
+
+    code = "too_complex"
+
+
+class ParserError(ProcessingError):
+    """Parsing failed for a reason that is not the user's fault.
+
+    Distinct from the errors above: those describe a problem with the file, which the
+    user can act on. This one means our code or a parsing library failed, so it is a
+    server-side error and its detail must not reach the client.
+    """
+
+    code = "parser_error"
+
+
+class StorageError(DocStructError):
+    """Reading from or writing to the file store failed."""
+
+    code = "storage_error"
 
 
 class ConfigurationError(DocStructError):

@@ -6,6 +6,8 @@ be silently dropped from generated migrations.
 """
 
 from app.models.db.base import Base
+from app.models.db.chunk import ChunkRecord
+from app.models.db.content_block import ContentBlockRecord
 from app.models.db.document import DocumentRecord
 
-__all__ = ["Base", "DocumentRecord"]
+__all__ = ["Base", "ChunkRecord", "ContentBlockRecord", "DocumentRecord"]

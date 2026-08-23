@@ -31,6 +31,21 @@ ERROR_RESPONSES: dict[int, dict[str, Any]] = {
             "outside the allowed range. `details.fields` names each offending field."
         ),
     },
+    status.HTTP_413_CONTENT_TOO_LARGE: {
+        "model": ErrorResponse,
+        "description": (
+            "The uploaded file is larger than the configured limit. The limit is "
+            "enforced while reading, so an oversized upload is cut off rather than "
+            "buffered in full."
+        ),
+    },
+    status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: {
+        "model": ErrorResponse,
+        "description": (
+            "The file's actual content is not a supported format. Detection is based on "
+            "the bytes, not the filename, so renaming a file does not change this."
+        ),
+    },
     status.HTTP_500_INTERNAL_SERVER_ERROR: {
         "model": ErrorResponse,
         "description": (

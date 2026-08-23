@@ -68,6 +68,29 @@ export function statusCopy(status: ProcessingStatus): StatusCopy {
 }
 
 /**
+ * Extra guidance for specific failure reasons.
+ *
+ * The backend's `error_message` already says *what* went wrong in plain language. These
+ * add *what to do about it* where there is a useful answer — keyed on `failure_code`,
+ * which is stable, rather than on the message text, which may be reworded.
+ */
+const FAILURE_HINTS: Record<string, string> = {
+  requires_ocr:
+    "Reading scanned pages needs OCR, which is planned for a later milestone.",
+  encrypted_file: "Remove the password from the file and upload it again.",
+  corrupt_file: "Try re-exporting or re-saving the file, then upload it again.",
+  no_content: "The file opened correctly but had no text to extract.",
+  too_complex: "Try splitting the file into smaller parts.",
+  interrupted: "Nothing was wrong with the file — please upload it again.",
+};
+
+/** Return extra guidance for a failure, if there is any worth showing. */
+export function failureHint(failureCode: string | null): string | null {
+  if (!failureCode) return null;
+  return FAILURE_HINTS[failureCode] ?? null;
+}
+
+/**
  * Build the full message shown for a document.
  *
  * For a failed document the backend's `error_message` explains the specific cause

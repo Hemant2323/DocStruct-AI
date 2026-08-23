@@ -1,15 +1,29 @@
 /**
  * Application shell.
  *
- * Milestone 1 renders a single page proving the frontend/backend link works. Routing
- * arrives in Milestone 5 when there is more than one screen to route between — adding a
- * router now would be complexity with nothing to show for it.
+ * Milestone 2 renders one page: upload, the document list with live status, and the
+ * extracted content of whichever document is selected. Routing arrives in Milestone 5
+ * when there is more than one screen to route between.
  */
 
+import { useCallback, useState } from "react";
+
 import { BackendStatus } from "@/components/BackendStatus";
+import { DocumentContent } from "@/components/DocumentContent";
 import { DocumentList } from "@/components/DocumentList";
+import { DocumentUpload } from "@/components/DocumentUpload";
+import type { DocumentSummary } from "@/types/api";
 
 export default function App(): React.JSX.Element {
+  // Bumped after each upload so the list refreshes immediately rather than waiting for
+  // its next poll.
+  const [refreshToken, setRefreshToken] = useState(0);
+  const [selected, setSelected] = useState<DocumentSummary | null>(null);
+
+  const handleUploaded = useCallback(() => {
+    setRefreshToken((token) => token + 1);
+  }, []);
+
   return (
     <div className="min-h-full bg-slate-50 dark:bg-slate-900">
       <header className="border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800">
@@ -25,11 +39,24 @@ export default function App(): React.JSX.Element {
 
       <main className="mx-auto max-w-4xl space-y-6 px-6 py-8">
         <BackendStatus />
-        <DocumentList />
+        <DocumentUpload onUploaded={handleUploaded} />
+        <DocumentList
+          refreshToken={refreshToken}
+          selectedId={selected?.id ?? null}
+          onSelect={setSelected}
+        />
+
+        {selected !== null && (
+          <DocumentContent
+            documentId={selected.id}
+            filename={selected.original_filename}
+            onClose={() => setSelected(null)}
+          />
+        )}
 
         <footer className="pt-2 text-center text-xs text-slate-500 dark:text-slate-500">
-          Milestone 1 — foundation. Upload, extraction, summaries and Q&amp;A
-          arrive in later milestones.
+          Milestone 2 — document ingestion. Summaries, plain-language explanations and
+          question answering arrive in later milestones.
         </footer>
       </main>
     </div>

@@ -9,13 +9,17 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.core.database import get_db_session
+from app.core.database import get_db_session, get_session_factory
+from app.repositories.block_repo import ContentBlockRepository
+from app.repositories.chunk_repo import ChunkRepository
 from app.repositories.document_repo import DocumentRepository
 from app.services.document_service import DocumentService
+from app.services.ingestion_service import IngestionService
+from app.services.job_service import JobService
 from app.storage.base import FileStorage
 from app.storage.local import LocalFileStorage
 
@@ -47,15 +51,65 @@ def get_document_repository(
     return DocumentRepository(session)
 
 
+def get_block_repository(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ContentBlockRepository:
+    """Return a content block repository bound to this request's session."""
+    return ContentBlockRepository(session)
+
+
+def get_chunk_repository(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ChunkRepository:
+    """Return a chunk repository bound to this request's session."""
+    return ChunkRepository(session)
+
+
 def get_document_service(
     repository: Annotated[DocumentRepository, Depends(get_document_repository)],
     storage: Annotated[FileStorage, Depends(get_file_storage)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    block_repository: Annotated[ContentBlockRepository, Depends(get_block_repository)],
+    chunk_repository: Annotated[ChunkRepository, Depends(get_chunk_repository)],
 ) -> DocumentService:
     """Return a fully wired document service."""
-    return DocumentService(repository, storage)
+    return DocumentService(
+        repository,
+        storage,
+        settings,
+        block_repository=block_repository,
+        chunk_repository=chunk_repository,
+    )
+
+
+def get_ingestion_service(
+    storage: Annotated[FileStorage, Depends(get_file_storage)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> IngestionService:
+    """Return the ingestion pipeline.
+
+    Built with the session **factory**, not the request's session. Ingestion runs in a
+    background task after the response has been sent, by which point the request-scoped
+    session is already committed and closed — using it would fail at runtime.
+    """
+    return IngestionService(get_session_factory(), storage, settings)
+
+
+def get_job_service(request: Request) -> JobService:
+    """Return the application-wide background job scheduler.
+
+    Stored on application state rather than created per request, so its concurrency limit
+    applies across all requests rather than being reset by each one.
+    """
+    job_service = getattr(request.app.state, "job_service", None)
+    if job_service is None:  # pragma: no cover - guaranteed by the lifespan handler
+        raise RuntimeError("JobService was not initialised during application startup")
+    return job_service
 
 
 # Aliases keep route signatures readable.
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 OwnerIdDep = Annotated[str, Depends(get_current_owner_id)]
 DocumentServiceDep = Annotated[DocumentService, Depends(get_document_service)]
+IngestionServiceDep = Annotated[IngestionService, Depends(get_ingestion_service)]
+JobServiceDep = Annotated[JobService, Depends(get_job_service)]

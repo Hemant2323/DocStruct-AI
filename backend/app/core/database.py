@@ -13,12 +13,15 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from sqlalchemy import event
+from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import ConnectionPoolEntry
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
@@ -49,12 +52,33 @@ def _engine_kwargs(settings: Settings) -> dict[str, Any]:
     return kwargs
 
 
+def _enable_sqlite_foreign_keys(engine: AsyncEngine) -> None:
+    """Turn on foreign-key enforcement for every SQLite connection.
+
+    SQLite ships with foreign keys **disabled** and the pragma is per-connection, so
+    without this ``ON DELETE CASCADE`` silently does nothing: deleting a document would
+    leave its content blocks and chunks behind as orphans. PostgreSQL enforces them
+    always, so skipping this would mean the development and production databases quietly
+    behaved differently — exactly the divergence that surfaces at deploy time.
+    """
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_pragma(dbapi_connection: DBAPIConnection, _record: ConnectionPoolEntry) -> None:
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
+
 def get_engine() -> AsyncEngine:
     """Return the process-wide async engine, creating it on first use."""
     global _engine
     if _engine is None:
         settings = get_settings()
         _engine = create_async_engine(settings.database_url, **_engine_kwargs(settings))
+        if settings.database_dialect == "sqlite":
+            _enable_sqlite_foreign_keys(_engine)
         logger.info("Database engine created dialect=%s", settings.database_dialect)
     return _engine
 

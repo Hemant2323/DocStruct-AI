@@ -7,10 +7,11 @@ information, summarizes it, explains it in plain language, and answers your ques
 about it — with citations pointing back to the exact page, row, or paragraph the answer
 came from.
 
-> **Status: Milestone 1 (Foundation) complete and polished. Milestone 2 has not started.**
-> The backend, frontend, database layer, and test suite run locally. Document upload,
-> content extraction, summaries, and Q&A are **not implemented yet** — they arrive in
-> later milestones. See [Development phases](#development-phases).
+> **Status: Milestone 2 (Document Ingestion) complete. Milestone 3 has not started.**
+> You can upload PDF, DOCX, TXT, CSV and XLSX files and see their contents extracted into
+> structured blocks, each traceable back to its exact page, line, row or cell. Summaries,
+> plain-language explanations, and Q&A are **not implemented yet** — they arrive in later
+> milestones. See [Development phases](#development-phases).
 
 ---
 
@@ -479,9 +480,14 @@ Each parser's only job is to produce `ContentBlock` objects with accurate proven
 
 ### Shared by all parsers
 
-Every parser must handle, with a clear error rather than a crash or a silent empty result:
+Every parser handles, with a clear error rather than a crash or a silent empty result:
 an empty file, a corrupt file, a file whose extension lies about its content, a file that
 exceeds size limits, and a file containing no extractable text.
+
+**Adding a format costs one file.** Write a parser implementing `DocumentParser`, add one
+line to `app/ingestion/registry.py`, and nothing else in the system changes — the
+normalizer, chunker, storage and API all work on `ContentBlock` and never learn what a
+page or a worksheet is.
 
 ---
 
@@ -493,8 +499,8 @@ Each phase produces something that runs and is tested before the next begins.
 |---|---|---|
 | **0. Planning** ✅ | Architecture, stack, structure, this document, `CLAUDE.md`, `.gitignore` | Approved by the project owner |
 | **1. Foundation** ✅ | Backend skeleton, config from env vars, logging, error handling, health + readiness probes, database layer with migrations, document read API, React frontend talking to it, test harness | `ruff`, `mypy`, and `pytest` all green; both servers start; frontend reaches the backend |
-| **2. Ingestion** *(not started)* | All five parsers, the canonical model, normalizer, chunker, upload endpoint, background processing | Every parser is tested against fixtures, **including provenance assertions** and failure cases |
-| **3. AI core** | `LLMProvider` interface, Claude implementation, summarize and explain, prompt templates, citation mapping | Works end-to-end on a real document; unit tests run with a mocked provider |
+| **2. Ingestion** ✅ | All five parsers, the canonical model, normalizer, chunker, upload endpoint, background processing | Every parser is tested against fixtures, **including provenance assertions** and failure cases |
+| **3. AI core** *(not started)* | `LLMProvider` interface, Claude implementation, summarize and explain, prompt templates, citation mapping | Works end-to-end on a real document; unit tests run with a mocked provider |
 | **4. Q&A** | Retrieval, context builder, single- and multi-document Q&A with citations | Answers are correct and citations resolve to the right page/row |
 | **5. Frontend** | Upload UI, document list with live status, summary view, chat interface with clickable citations | A person can complete the whole flow in a browser without touching the API directly |
 | **6. Hardening** | Full security review, rate limiting, observability, performance work on large files, documentation pass | Security checklist verified; large-file behaviour measured, not assumed |
@@ -602,7 +608,9 @@ The API is now on **http://127.0.0.1:8000**:
 |---|---|
 | `/api/health` | Liveness — is the process up? |
 | `/api/ready` | Readiness — are its dependencies reachable? |
-| `/api/documents` | Document list (empty until Milestone 2) |
+| `POST /api/documents` | Upload a file (returns 202; processing runs in the background) |
+| `/api/documents` | Document list with processing status |
+| `/api/documents/{id}/content` | Extracted content blocks, each with its source location |
 | `/docs` | Interactive API documentation (Swagger UI) |
 | `/redoc` | The same API reference in ReDoc |
 
@@ -635,9 +643,13 @@ npm install                           # first time only
 npm run dev
 ```
 
-Open **http://localhost:5173**. The page shows live backend connection status and the
-document list. The Vite dev server proxies `/api` to the backend, so the browser talks to
-a single origin and no CORS round-trip is involved in development.
+Open **http://localhost:5173** (use `localhost`, not `127.0.0.1` — on Windows Vite binds
+only to `localhost`). You can drag files onto the page, watch each one move from
+*Waiting* to *Processing* to *Ready*, and click **View content** to see the extracted
+blocks with the page, line, row or cell each came from.
+
+The Vite dev server proxies `/api` to the backend, so the browser talks to a single origin
+and no CORS round-trip is involved in development.
 
 ### Running the checks
 

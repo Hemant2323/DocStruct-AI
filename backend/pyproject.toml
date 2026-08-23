@@ -13,6 +13,18 @@ dependencies = [
     "alembic>=1.14",
     "aiosqlite>=0.20",
     "asyncpg>=0.30",
+    # --- Ingestion (Milestone 2) ---------------------------------------------
+    # Required by FastAPI to accept multipart file uploads.
+    "python-multipart>=0.0.20",
+    # PDF text + tables. One engine for the format, deliberately not paired with
+    # pypdf: two PDF engines would be the overlap CLAUDE.md warns against.
+    "pdfplumber>=0.11",
+    "python-docx>=1.1",
+    # read_only/data_only streaming keeps memory bounded on large workbooks.
+    "openpyxl>=3.1",
+    # Text files are often cp1252, not UTF-8; guessing wrong produces mojibake
+    # that silently poisons every downstream summary.
+    "charset-normalizer>=3.4",
 ]
 
 [project.optional-dependencies]
@@ -63,6 +75,13 @@ ignore = [
 "tests/**/*.py" = ["S101", "S105", "S106"]
 # Alembic templates are generated; migrations are intentionally verbose.
 "alembic/**/*.py" = ["I001"]
+# The normalizer's translation table is *made of* look-alike characters — flagging them
+# as ambiguous flags the feature itself.
+"app/ingestion/normalizer.py" = ["RUF001"]
+# Tests deliberately contain smart quotes, ligatures and zero-width characters as inputs.
+"tests/unit/test_normalizer_and_chunker.py" = ["RUF001", "S101"]
+# A generator script run by hand; printing what it wrote is its whole user interface.
+"tests/fixtures/make_pdf_fixtures.py" = ["T201"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
@@ -89,6 +108,20 @@ strict_equality = true
 # ---------------------------------------------------------------------------
 # pytest
 # ---------------------------------------------------------------------------
+[[tool.mypy.overrides]]
+# These document-parsing libraries ship no type stubs. Silencing the missing-import
+# error is preferable to adding stub packages we would then have to keep in step, and
+# preferable to weakening strictness anywhere else: our own code stays fully checked,
+# and the untyped boundary is confined to these imports.
+module = [
+    "pdfplumber.*",
+    "pdfminer.*",
+    "openpyxl.*",
+    "docx.*",
+    "charset_normalizer.*",
+]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

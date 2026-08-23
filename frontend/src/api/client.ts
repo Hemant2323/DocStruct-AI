@@ -90,11 +90,18 @@ export async function apiRequest<T>(
 
   let response: Response;
   try {
+    // FormData must NOT get an explicit Content-Type: the browser has to set it
+    // itself so it can append the multipart boundary. Setting it by hand produces a
+    // request the server cannot parse.
+    const isFormData = init.body instanceof FormData;
+
     response = await fetch(url, {
       ...init,
       headers: {
         Accept: "application/json",
-        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...(init.body && !isFormData
+          ? { "Content-Type": "application/json" }
+          : {}),
         ...init.headers,
       },
     });

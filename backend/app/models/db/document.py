@@ -42,6 +42,22 @@ class DocumentRecord(Base):
     # Populated whenever status is FAILED, so a failure is never silent.
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Machine-readable counterpart to error_message. The frontend branches on this
+    # ("requires_ocr" gets a specific hint) rather than matching on message text, which
+    # may be reworded at any time.
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # SHA-256 of the stored bytes. Indexed so a future duplicate check is a lookup
+    # rather than a scan; nothing in Milestone 2 rejects duplicates.
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
+    # Pages for a document, worksheets for a workbook. Null until extraction succeeds.
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # When extraction finished, successfully or not. Null while pending or processing,
+    # which is what lets the startup reaper find documents abandoned by a crash.
+    processed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime, nullable=False, default=utcnow, onupdate=utcnow

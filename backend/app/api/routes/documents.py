@@ -12,14 +12,82 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Path, Query, status
+from fastapi import APIRouter, File, Path, Query, UploadFile, status
 
-from app.api.deps import DocumentServiceDep, OwnerIdDep
+from app.api.deps import (
+    DocumentServiceDep,
+    IngestionServiceDep,
+    JobServiceDep,
+    OwnerIdDep,
+    SettingsDep,
+)
 from app.api.responses import error_responses
-from app.api.schemas.document import DocumentListResponse, DocumentResponse
+from app.api.schemas.document import (
+    ContentBlockResponse,
+    ContentResponse,
+    DocumentListResponse,
+    DocumentResponse,
+)
+from app.core.security import read_upload_within_limit
 from app.models.domain.document import ProcessingStatus
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+
+
+@router.post(
+    "",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Upload a document",
+    response_description=(
+        "The document was accepted and queued. Processing has not finished yet — poll "
+        "`GET /documents/{document_id}` until `status` leaves `processing`."
+    ),
+    responses=error_responses(
+        status.HTTP_413_CONTENT_TOO_LARGE,
+        status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+    ),
+)
+async def upload_document(
+    service: DocumentServiceDep,
+    ingestion: IngestionServiceDep,
+    jobs: JobServiceDep,
+    owner_id: OwnerIdDep,
+    settings: SettingsDep,
+    file: UploadFile = File(description="The document to upload."),
+) -> DocumentResponse:
+    """Upload a PDF, DOCX, TXT, CSV or XLSX file.
+
+    Returns **202 Accepted** immediately: the file is stored and recorded, but extracting
+    its contents happens in the background, because parsing a large document can take far
+    longer than an HTTP request should be held open.
+
+    The response carries the new document with `status: "pending"`. Poll
+    `GET /documents/{document_id}` until the status becomes `ready` or `failed`.
+
+    **The file's type is determined by its content, not its name.** A `.pdf` extension on
+    a Word document is detected and handled correctly; an unsupported format is rejected
+    with 415 whatever it claims to be.
+    """
+    upload = await read_upload_within_limit(file, settings.max_upload_size_bytes)
+
+    document = await service.create_from_upload(
+        owner_id=owner_id,
+        filename=file.filename,
+        content=upload.content,
+        size_bytes=upload.size_bytes,
+        content_hash=upload.sha256,
+    )
+
+    # Scheduled after the record exists, so the background task always finds its row.
+    # The task opens its own session; the one used here is closed with this request.
+    jobs.schedule(
+        f"ingest:{document.id}",
+        lambda: ingestion.process_document(document.id, owner_id=owner_id),
+    )
+
+    return DocumentResponse.from_domain(document)
 
 
 @router.get(
@@ -97,6 +165,39 @@ async def get_document(
     """
     document = await service.get_document(document_id, owner_id=owner_id)
     return DocumentResponse.from_domain(document)
+
+
+@router.get(
+    "/{document_id}/content",
+    response_model=ContentResponse,
+    summary="Get a document's extracted content",
+    response_description="A page of extracted blocks, in reading order.",
+    responses=error_responses(status.HTTP_404_NOT_FOUND, status.HTTP_422_UNPROCESSABLE_CONTENT),
+)
+async def get_document_content(
+    service: DocumentServiceDep,
+    owner_id: OwnerIdDep,
+    document_id: UUID = Path(description="Identifier of the document."),
+    limit: int = Query(default=100, ge=1, le=500, description="Maximum blocks to return."),
+    offset: int = Query(default=0, ge=0, description="Blocks to skip, for pagination."),
+) -> ContentResponse:
+    """Return the structured content extracted from a document.
+
+    Each block carries a `location_label` saying where in the original file it came from
+    — "page 4", "lines 40-48", "Q3 Budget!A12:F30". That is what later milestones turn
+    into citations, and what makes an answer checkable rather than merely plausible.
+
+    Returns an empty list while the document is still `pending` or `processing`.
+    """
+    blocks, total = await service.get_content_blocks(
+        document_id, owner_id=owner_id, limit=limit, offset=offset
+    )
+    return ContentResponse(
+        items=[ContentBlockResponse.from_domain(block) for block in blocks],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.delete(

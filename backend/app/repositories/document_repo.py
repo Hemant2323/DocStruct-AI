@@ -13,6 +13,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.db.base import utcnow
 from app.models.db.document import DocumentRecord
 from app.models.domain.document import Document, ProcessingStatus, SupportedFileType
 
@@ -27,6 +28,10 @@ def _to_domain(record: DocumentRecord) -> Document:
         size_bytes=record.size_bytes,
         status=ProcessingStatus(record.status),
         error_message=record.error_message,
+        failure_code=record.failure_code,
+        content_hash=record.content_hash,
+        page_count=record.page_count,
+        processed_at=record.processed_at,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
@@ -51,6 +56,7 @@ class DocumentRepository:
         file_type: SupportedFileType,
         size_bytes: int,
         status: ProcessingStatus = ProcessingStatus.PENDING,
+        content_hash: str | None = None,
     ) -> Document:
         """Insert a new document record and return it."""
         record = DocumentRecord(
@@ -59,6 +65,7 @@ class DocumentRepository:
             file_type=file_type,
             size_bytes=size_bytes,
             status=status,
+            content_hash=content_hash,
         )
         self._session.add(record)
         await self._session.flush()
@@ -115,12 +122,18 @@ class DocumentRepository:
         owner_id: str,
         status: ProcessingStatus,
         error_message: str | None = None,
+        failure_code: str | None = None,
+        page_count: int | None = None,
     ) -> Document | None:
         """Move a document to a new processing status.
 
         When moving to ``FAILED`` an ``error_message`` is required: a failed document
         must always be able to tell the user why. Moving to any non-failed status clears
-        any previous error so stale text cannot linger on a document that has recovered.
+        the previous error and failure code, so stale text cannot linger on a document
+        that has since recovered.
+
+        Reaching a terminal status stamps ``processed_at``, which is also what lets the
+        startup reaper recognise a document abandoned mid-parse by a crash.
         """
         if status is ProcessingStatus.FAILED and not error_message:
             raise ValueError("error_message is required when setting status to FAILED")
@@ -130,7 +143,19 @@ class DocumentRepository:
             return None
 
         record.status = status
-        record.error_message = error_message if status is ProcessingStatus.FAILED else None
+        if status is ProcessingStatus.FAILED:
+            record.error_message = error_message
+            record.failure_code = failure_code
+        else:
+            record.error_message = None
+            record.failure_code = None
+
+        if page_count is not None:
+            record.page_count = page_count
+
+        if status.is_terminal:
+            record.processed_at = utcnow()
+
         await self._session.flush()
         await self._session.refresh(record)
         return _to_domain(record)
@@ -144,6 +169,31 @@ class DocumentRepository:
         await self._session.delete(record)
         await self._session.flush()
         return True
+
+    async def fail_stranded_processing(self, *, reason: str, failure_code: str) -> int:
+        """Mark every document stuck in PROCESSING as failed. Returns how many.
+
+        Called once at startup. A document is only ever in PROCESSING while a background
+        task is actively working on it, so if any are in that state when the process
+        starts, the previous process died mid-parse and nothing will ever finish them.
+        Without this they would sit in a spinner forever.
+
+        Not owner-scoped: this is an operational sweep across all documents, not a user
+        request.
+        """
+        result = await self._session.execute(
+            select(DocumentRecord).where(DocumentRecord.status == ProcessingStatus.PROCESSING)
+        )
+        records = list(result.scalars().all())
+
+        for record in records:
+            record.status = ProcessingStatus.FAILED
+            record.error_message = reason
+            record.failure_code = failure_code
+            record.processed_at = utcnow()
+
+        await self._session.flush()
+        return len(records)
 
     async def _get_record(self, document_id: UUID, *, owner_id: str) -> DocumentRecord | None:
         """Fetch the raw ORM record, always scoped by owner."""

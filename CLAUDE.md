@@ -11,10 +11,10 @@ DocStruct AI is an AI-powered document intelligence platform. Users upload colle
 files (PDF, DOCX, TXT, CSV, XLSX); the system extracts their contents, structures them,
 summarizes and explains them, and answers questions about them with source citations.
 
-**Status: Milestone 1 (Foundation) complete and polished. Milestone 2 has NOT started.**
-The backend, database layer, frontend, and test suite are implemented and green. No
-document ingestion, parsing, AI, or retrieval code exists yet — Milestone 2 adds the
-ingestion pipeline (upload + the five parsers).
+**Status: Milestone 2 (Document Ingestion) complete. Milestone 3 has NOT started.**
+Files can be uploaded and are parsed into structured, traceable content. No AI, LLM,
+embeddings, retrieval, OCR, or authentication code exists yet — those belong to later
+milestones.
 
 ---
 
@@ -254,7 +254,7 @@ Documentation that describes a system which no longer exists is worse than no do
 
 ---
 
-## 11. Current state (Milestone 1)
+## 11. Current state (Milestone 2)
 
 ### What exists
 
@@ -272,16 +272,22 @@ Documentation that describes a system which no longer exists is worse than no do
 | OpenAPI documentation + examples | Done — `app/api/responses.py`, schema `Field` descriptions |
 | Document read API (list / get / delete) | Done — `app/api/routes/documents.py` |
 | React frontend talking to the backend | Done — `frontend/src/` |
-| Test suite | Done — 120 tests |
+| Upload + validation + detection | Done — `app/core/security.py`, `app/ingestion/detection.py` |
+| Five parsers (PDF/DOCX/TXT/CSV/XLSX) | Done — `app/ingestion/parsers/` |
+| Canonical `ContentBlock` + `Provenance` | Done — `app/models/domain/content.py` |
+| Normalizer + structure-aware chunker | Done — `app/ingestion/` |
+| Background processing + startup reaper | Done — `app/services/ingestion_service.py`, `job_service.py` |
+| Frontend upload, live status, content viewer | Done — `frontend/src/components/` |
+| Test suite | Done — 352 tests |
 
 ### What deliberately does not exist yet
 
-* **Upload (`POST /documents`)** — arrives in Milestone 2 with the parsing pipeline.
-  Accepting files that nothing can process would be a half-feature.
-* **Parsers, chunker, normalizer** — Milestone 2.
 * **`LLMProvider`, prompts, citations** — Milestone 3. No stub interface was created,
   because an empty interface written before its first use gets the abstraction wrong.
-* **`Retriever`** — Milestone 4.
+* **`Retriever`, embeddings, search** — Milestone 4. Chunks are stored and carry their
+  `block_ids`, so the retrieval layer has everything it needs when it arrives.
+* **OCR** — a scanned PDF fails with `failure_code="requires_ocr"` rather than
+  silently returning nothing.
 * **Authentication** — every request runs as `DEFAULT_OWNER_ID` in `app/api/deps.py`.
   The seam is real: routes, services, and every query already take and filter on an
   owner. Adding auth means changing `get_current_owner_id()` and nothing else.
@@ -330,3 +336,69 @@ a reason.
 Every route needs `summary`, a docstring (becomes the description), `response_description`,
 and its error cases via `error_responses(...)` from `app/api/responses.py`.
 `tests/integration/test_openapi.py` fails the build if any of these are missing.
+
+
+---
+
+## 13. Ingestion rules (Milestone 2)
+
+### The pipeline
+
+```
+upload -> validate -> store -> record (PENDING)
+                                  |
+                    background: PROCESSING -> parse -> normalize -> chunk
+                                  -> persist -> READY / FAILED(+reason)
+```
+
+### Adding a file format
+
+Write one parser in `app/ingestion/parsers/`, add one line to `_PARSERS` in
+`registry.py`. Nothing else changes. If a format needs a change anywhere else, the
+abstraction has leaked — fix the abstraction.
+
+### Parser contract
+
+* **Synchronous.** Parsing is CPU-bound; `async def` would be a lie. The caller runs it
+  via `asyncio.to_thread`.
+* **Pure.** Bytes in, `ParsedDocument` out. No database, storage, config, or logging
+  setup. This is what makes parsers trivially testable.
+* **Provenance on every block, never invented.** Use `Provenance.unknown(reason)` when a
+  location genuinely cannot be determined, and `is_exact=False` when it is inferred
+  (a PDF heading guessed from font size). A parser that drops provenance is broken.
+* **Enforce `ParserLimits`.** Never return an unbounded block list.
+* **Surface warnings.** Partial success must not look like clean success.
+
+### Background processing
+
+* The ingestion job **creates its own database session** from the factory. The
+  request-scoped session is committed and closed by the time it runs — reusing it fails
+  at runtime, and a mocked test would not notice.
+* A document must **never** be left in `PROCESSING`. The one legitimate bare
+  `except Exception` in the codebase guarantees this; it logs in full and records a
+  user-facing reason.
+* The startup reaper fails anything stranded by a crash.
+
+### Failure handling
+
+A parse failure is not an HTTP error — the response was sent long ago. It becomes
+`status=FAILED` plus:
+
+* `error_message` — plain language, written for the person who uploaded the file. No
+  library names, paths, or tracebacks; those go to the log.
+* `failure_code` — stable and machine-readable, so the frontend can branch. Current
+  values: `requires_ocr`, `encrypted_file`, `corrupt_file`, `no_content`, `too_complex`,
+  `interrupted`, `internal_error`.
+
+### Tabular files are data, not prose
+
+CSV and XLSX produce one `schema` block (columns, inferred types, profile) plus batched
+`sheet_row` blocks. Sending 50,000 rows to a model is impossible and pointless; the
+schema answers structural questions without reading any data.
+
+### Chunking
+
+Headings start new chunks; tables and schema blocks are never split. Every chunk records
+`block_ids` — the middle link in the citation chain. Sizes come from settings
+(`chunk_target_chars`, `chunk_overlap_chars`); the token count is a documented
+character-based estimate, not a real tokenizer.

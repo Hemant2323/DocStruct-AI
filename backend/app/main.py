@@ -20,8 +20,10 @@ from app.api.errors import register_exception_handlers
 from app.api.middleware import RequestContextMiddleware
 from app.api.routes import documents, health
 from app.core.config import Settings, get_settings
-from app.core.database import dispose_engine
+from app.core.database import dispose_engine, get_session_factory
 from app.core.logging import configure_logging, get_logger
+from app.services.ingestion_service import reap_interrupted_documents
+from app.services.job_service import JobService
 
 logger = get_logger(__name__)
 
@@ -31,11 +33,16 @@ DESCRIPTION = """
 **DocStruct AI** turns collections of documents into information that is structured,
 searchable, and easy to extract.
 
-### Current status — Milestone 1 (foundation)
+### Current status — Milestone 2 (document ingestion)
 
-This API currently exposes health probes and the read side of the document lifecycle.
-Uploading, content extraction, summaries, and question answering arrive in later
-milestones.
+Upload a PDF, DOCX, TXT, CSV or XLSX file and it is parsed into structured content, with
+every piece traceable back to where it came from in the original file.
+
+Uploads return **202 Accepted** immediately and are processed in the background: poll
+`GET /documents/{document_id}` until `status` becomes `ready` or `failed`, then read the
+extracted content from `GET /documents/{document_id}/content`.
+
+Summaries, plain-language explanations, and question answering arrive in later milestones.
 
 ### Error format
 
@@ -72,9 +79,10 @@ TAGS_METADATA = [
     {
         "name": "documents",
         "description": (
-            "Document metadata and processing status. A document moves through "
-            "`pending` → `processing` → `ready` (or `failed`); poll `GET /documents/"
-            "{document_id}` to follow it. Uploading arrives in Milestone 2."
+            "Upload, metadata, processing status, and extracted content. A document "
+            "moves through `pending` → `processing` → `ready` (or `failed`); poll "
+            "`GET /documents/{document_id}` to follow it. Every extracted block records "
+            "where in the source file it came from."
         ),
     },
 ]
@@ -100,8 +108,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         settings.storage_dir,
     )
 
+    # One scheduler for the whole process, so its concurrency limit is global rather
+    # than being reset per request.
+    app.state.job_service = JobService(max_concurrent=settings.max_concurrent_processing)
+
+    # Any document still marked PROCESSING belongs to a previous run that died mid-parse.
+    # Nothing will ever finish it, so it is failed with an explanation instead of
+    # spinning in the UI forever.
+    try:
+        await reap_interrupted_documents(get_session_factory())
+    except Exception:
+        # A missing or unreachable database must not stop the application from starting;
+        # the readiness probe reports that separately. Logged in full, never swallowed.
+        logger.exception("Could not reap interrupted documents at startup")
+
     yield
 
+    # Give in-flight ingestion a chance to finish rather than abandoning it mid-write.
+    await app.state.job_service.wait_for_all(timeout=10.0)
     await dispose_engine()
     logger.info("Shutdown complete")
 

@@ -2,6 +2,7 @@
 
 import { apiRequest } from "@/api/client";
 import type {
+  ContentResponse,
   DocumentListResponse,
   DocumentSummary,
   ProcessingStatus,
@@ -34,4 +35,34 @@ export async function getDocument(id: string): Promise<DocumentSummary> {
 /** Delete a document and its stored content. */
 export async function deleteDocument(id: string): Promise<void> {
   await apiRequest<void>(`/documents/${id}`, { method: "DELETE" });
+}
+
+/**
+ * Upload a file for ingestion.
+ *
+ * Resolves as soon as the server accepts the file (HTTP 202). Processing happens in the
+ * background, so the returned document has `status: "pending"` — poll {@link getDocument}
+ * until the status becomes `ready` or `failed`.
+ */
+export async function uploadDocument(file: File): Promise<DocumentSummary> {
+  const form = new FormData();
+  form.append("file", file);
+
+  return apiRequest<DocumentSummary>("/documents", {
+    method: "POST",
+    body: form,
+  });
+}
+
+/** Fetch a page of a document's extracted content blocks. */
+export async function getDocumentContent(
+  id: string,
+  params: { limit?: number; offset?: number } = {},
+): Promise<ContentResponse> {
+  const query = new URLSearchParams();
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
+  if (params.offset !== undefined) query.set("offset", String(params.offset));
+
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return apiRequest<ContentResponse>(`/documents/${id}/content${suffix}`);
 }

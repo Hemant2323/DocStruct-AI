@@ -1,0 +1,22 @@
+# ---------------------------------------------------------------------------
+# DocStruct AI — .gitattributes
+# ---------------------------------------------------------------------------
+
+# Normalise line endings for text so the repo is consistent across platforms.
+* text=auto
+
+# Binary fixtures must NEVER be line-ending converted. A PDF records byte offsets
+# in its xref table, so turning LF into CRLF shifts every offset and produces a
+# file that no PDF reader can open — silently breaking the test suite for anyone
+# who clones on a different platform.
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.png binary
+*.jpg binary
+*.ico binary
+
+# Keep these LF regardless of platform: shell scripts break with CRLF, and lockfiles
+# churn needlessly.
+*.sh text eol=lf
+package-lock.json text eol=lf

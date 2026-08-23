@@ -102,6 +102,14 @@ class Document:
         status: Where it is in the processing lifecycle.
         error_message: Why processing failed, when ``status`` is ``FAILED``. Always
             populated on failure — a failed document never gets an empty reason.
+        failure_code: Machine-readable failure reason, e.g. ``"requires_ocr"``. Lets the
+            frontend show a specific hint instead of matching on message text, the same
+            reasoning as the API's error ``code`` field.
+        content_hash: SHA-256 of the stored bytes. Identifies identical uploads.
+        page_count: Pages for a document, worksheets for a workbook. ``None`` until
+            processing succeeds.
+        processed_at: When extraction finished, successfully or not. ``None`` while the
+            document is still pending or processing.
         created_at: When the upload was accepted.
         updated_at: When the record last changed.
     """
@@ -113,5 +121,9 @@ class Document:
     size_bytes: int
     status: ProcessingStatus
     error_message: str | None
+    failure_code: str | None
+    content_hash: str | None
+    page_count: int | None
+    processed_at: datetime | None
     created_at: datetime
     updated_at: datetime

@@ -21,6 +21,7 @@ from app.core.database import dispose_engine, get_engine, get_session_factory
 from app.main import create_app
 from app.models.db import Base
 from app.repositories.document_repo import DocumentRepository
+from app.services.job_service import JobService
 from app.storage.local import LocalFileStorage
 
 
@@ -93,15 +94,32 @@ def app(settings: Settings, _database: None) -> FastAPI:
 
 @pytest.fixture
 async def client(app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
-    """An HTTP client that talks to the app in-process.
+    """An HTTP client that talks to the app in-process, with startup/shutdown run.
 
     ``ASGITransport`` dispatches straight to the application, so no port is bound and no
     real network is involved — the tests stay fast and cannot collide with a running dev
     server.
+
+    The lifespan context is entered explicitly because ``ASGITransport`` does not run it.
+    Without that, ``app.state.job_service`` would never be created and every upload would
+    fail — and the startup reaper would go untested.
     """
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=transport, base_url="http://testserver") as http_client,
+    ):
         yield http_client
+
+
+@pytest.fixture
+def job_service(app: FastAPI) -> JobService:
+    """The application's background job scheduler.
+
+    Tests await ``wait_for_all()`` on this to let ingestion finish before asserting,
+    rather than sleeping and hoping.
+    """
+    return app.state.job_service  # type: ignore[no-any-return]
 
 
 @pytest.fixture
