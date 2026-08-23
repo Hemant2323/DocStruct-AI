@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    /* Bundler mode — Vite handles the actual transpilation. */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* Provides types for `import.meta.env` and Vite's asset imports. */
+    "types": ["vite/client"],
+
+    /* Strictness. Per CLAUDE.md: strict mode, no implicit `any`. */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+
+    /* Path alias so imports read `@/api/client` rather than `../../api/client`. */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  /* A single config covers app code and the Vite config, so both are type-checked.
+     Project references would need `composite: true` plus emitted declarations, which
+     is machinery this project does not need. */
+  "include": ["src", "vite.config.ts"]
+}

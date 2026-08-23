@@ -1,0 +1,99 @@
+[project]
+name = "docstruct-ai-backend"
+version = "0.1.0"
+description = "DocStruct AI — AI-powered document intelligence and structuring platform (backend)"
+requires-python = ">=3.11"
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "alembic>=1.14",
+    "aiosqlite>=0.20",
+    "asyncpg>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+# ---------------------------------------------------------------------------
+# Ruff — linting and formatting (replaces flake8 + isort + black)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["."]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (import ordering)
+    "B",    # flake8-bugbear (likely bugs)
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade (modern syntax)
+    "ASYNC",# flake8-async (async correctness)
+    "S",    # flake8-bandit (security)
+    "T20",  # flake8-print (no stray print statements)
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "B008",  # function call in default argument — required by FastAPI's Depends()
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may use assert (S101) and hardcoded throwaway values (S105/S106).
+"tests/**/*.py" = ["S101", "S105", "S106"]
+# Alembic templates are generated; migrations are intentionally verbose.
+"alembic/**/*.py" = ["I001"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+# Without this, the local `alembic/` migrations directory makes ruff classify the
+# installed `alembic` package as first-party and mis-sort its imports.
+known-third-party = ["alembic"]
+
+# ---------------------------------------------------------------------------
+# mypy — static type checking
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q --strict-markers"
+markers = [
+    "live: tests that call real external services (never run in CI)",
+]

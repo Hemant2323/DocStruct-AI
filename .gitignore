@@ -1,0 +1,114 @@
+# ---------------------------------------------------------------------------
+# DocStruct AI — .gitignore
+# Rule of thumb: never commit secrets, dependencies, build output, or user data.
+# ---------------------------------------------------------------------------
+
+# --- Secrets & configuration -----------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials.json
+
+# --- User data (uploaded documents are private and must never be committed) --
+storage/
+uploads/
+data/
+!data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+# NOTE: the legacy `lib/` and `lib64/` entries from the standard Python template are
+# deliberately omitted. They are artifacts of `python setup.py build`, which this project
+# never runs, and being unanchored they also match `frontend/src/lib/` — silently
+# excluding real source files from the repository. `build/` and `dist/` above already
+# cover modern Python build output.
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# Type checking & linting caches
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+
+# --- Node / frontend -------------------------------------------------------
+node_modules/
+.npm
+.pnpm-store/
+.yarn/
+dist/
+build/
+.vite/
+.next/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Logs & runtime --------------------------------------------------------
+logs/
+*.log
+pids/
+*.pid
+*.seed
+
+# --- Editors & OS ----------------------------------------------------------
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Misc ------------------------------------------------------------------
+.cache/
+tmp/
+temp/
+scratch/

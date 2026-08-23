@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+/* Tailwind v4 configures the design system in CSS rather than a JS config file. */
+@theme {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
