@@ -12,11 +12,15 @@ from typing import Annotated
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.providers.base import LLMProvider
+from app.ai.providers.claude import ClaudeProvider
 from app.core.config import Settings, get_settings
 from app.core.database import get_db_session, get_session_factory
+from app.repositories.ai_result_repo import AIResultRepository
 from app.repositories.block_repo import ContentBlockRepository
 from app.repositories.chunk_repo import ChunkRepository
 from app.repositories.document_repo import DocumentRepository
+from app.services.analysis_service import AnalysisService
 from app.services.document_service import DocumentService
 from app.services.ingestion_service import IngestionService
 from app.services.job_service import JobService
@@ -82,6 +86,63 @@ def get_document_service(
     )
 
 
+def get_ai_result_repository(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> AIResultRepository:
+    """Return an AI result repository bound to this request's session."""
+    return AIResultRepository(session)
+
+
+#: Process-wide provider. Held here rather than built per request because the client
+#: owns an HTTP connection pool; rebuilding it on every call would discard those
+#: connections and add latency to every AI request.
+#:
+#: Deliberately NOT `functools.lru_cache` keyed on Settings — a Pydantic model is not
+#: hashable, so that fails at runtime with `unhashable type: 'Settings'`.
+_provider: LLMProvider | None = None
+
+
+def get_llm_provider(settings: Annotated[Settings, Depends(get_settings)]) -> LLMProvider:
+    """Return the configured language model provider.
+
+    Typed as the interface, not the implementation, so swapping providers later touches
+    this function and nothing else.
+    """
+    global _provider
+    if _provider is None:
+        _provider = ClaudeProvider(settings)
+    return _provider
+
+
+def reset_llm_provider() -> None:
+    """Drop the cached provider.
+
+    Used by tests, which change settings between cases and would otherwise get a
+    provider built from a previous test's configuration.
+    """
+    global _provider
+    _provider = None
+
+
+def get_analysis_service(
+    provider: Annotated[LLMProvider, Depends(get_llm_provider)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    documents: Annotated[DocumentRepository, Depends(get_document_repository)],
+    chunks: Annotated[ChunkRepository, Depends(get_chunk_repository)],
+    blocks: Annotated[ContentBlockRepository, Depends(get_block_repository)],
+    results: Annotated[AIResultRepository, Depends(get_ai_result_repository)],
+) -> AnalysisService:
+    """Return a fully wired analysis service."""
+    return AnalysisService(
+        provider=provider,
+        settings=settings,
+        documents=documents,
+        chunks=chunks,
+        blocks=blocks,
+        results=results,
+    )
+
+
 def get_ingestion_service(
     storage: Annotated[FileStorage, Depends(get_file_storage)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -113,3 +174,5 @@ OwnerIdDep = Annotated[str, Depends(get_current_owner_id)]
 DocumentServiceDep = Annotated[DocumentService, Depends(get_document_service)]
 IngestionServiceDep = Annotated[IngestionService, Depends(get_ingestion_service)]
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
+AnalysisServiceDep = Annotated[AnalysisService, Depends(get_analysis_service)]
+LLMProviderDep = Annotated[LLMProvider, Depends(get_llm_provider)]

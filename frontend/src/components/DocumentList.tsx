@@ -216,7 +216,7 @@ export function DocumentList({
                           onClick={() => onSelect(isSelected ? null : document)}
                           className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700"
                         >
-                          {isSelected ? "Hide" : "View content"}
+                          {isSelected ? "Hide" : "Analyze"}
                         </button>
                       )}
                       <button

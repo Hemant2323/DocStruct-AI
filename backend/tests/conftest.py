@@ -8,7 +8,7 @@ disposed and rebuilt around each test, which is why ``get_settings.cache_clear()
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 
 import pytest
@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_llm_provider, reset_llm_provider
 from app.core.config import Settings, get_settings
 from app.core.database import dispose_engine, get_engine, get_session_factory
 from app.main import create_app
@@ -23,6 +24,7 @@ from app.models.db import Base
 from app.repositories.document_repo import DocumentRepository
 from app.services.job_service import JobService
 from app.storage.local import LocalFileStorage
+from tests.fixtures.fake_provider import FakeLLMProvider
 
 
 @pytest.fixture
@@ -86,10 +88,46 @@ def file_storage(settings: Settings) -> LocalFileStorage:
     return LocalFileStorage(settings.storage_dir)
 
 
+@pytest.fixture(autouse=True)
+def _reset_provider() -> Generator[None, None, None]:
+    """Drop the cached LLM provider around every test.
+
+    The provider is a process-wide singleton (it owns a connection pool), so without
+    this a test would inherit one built from a previous test's settings.
+    """
+    reset_llm_provider()
+    yield
+    reset_llm_provider()
+
+
 @pytest.fixture
 def app(settings: Settings, _database: None) -> FastAPI:
     """The FastAPI application wired to the test database."""
     return create_app(settings)
+
+
+@pytest.fixture
+def fake_provider() -> FakeLLMProvider:
+    """A stand-in language model. No test ever calls the real API."""
+    return FakeLLMProvider()
+
+
+@pytest.fixture
+def ai_app(app: FastAPI, fake_provider: FakeLLMProvider) -> FastAPI:
+    """The application with the language model replaced by a fake."""
+    app.dependency_overrides[get_llm_provider] = lambda: fake_provider
+    return app
+
+
+@pytest.fixture
+async def ai_client(ai_app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
+    """An HTTP client whose AI calls go to the fake provider."""
+    transport = ASGITransport(app=ai_app)
+    async with (
+        ai_app.router.lifespan_context(ai_app),
+        AsyncClient(transport=transport, base_url="http://testserver") as http_client,
+    ):
+        yield http_client
 
 
 @pytest.fixture

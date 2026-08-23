@@ -7,11 +7,14 @@ information, summarizes it, explains it in plain language, and answers your ques
 about it — with citations pointing back to the exact page, row, or paragraph the answer
 came from.
 
-> **Status: Milestone 2 (Document Ingestion) complete. Milestone 3 has not started.**
-> You can upload PDF, DOCX, TXT, CSV and XLSX files and see their contents extracted into
-> structured blocks, each traceable back to its exact page, line, row or cell. Summaries,
-> plain-language explanations, and Q&A are **not implemented yet** — they arrive in later
-> milestones. See [Development phases](#development-phases).
+> **Status: Milestone 3 (AI Understanding) complete. Milestone 4 has not started.**
+> Upload PDF, DOCX, TXT, CSV and XLSX files, see their contents extracted into structured
+> blocks, and get an AI summary, a plain-language explanation, or structured facts — each
+> cited back to the exact page, line, row or cell it came from. Conversational Q&A is
+> **not implemented yet**. See [Development phases](#development-phases).
+>
+> AI features need an `ANTHROPIC_API_KEY`; without one the app runs normally and simply
+> reports that they are unavailable.
 
 ---
 
@@ -25,6 +28,7 @@ came from.
 - [Project structure](#project-structure)
 - [Data flow](#data-flow)
 - [How each file type is processed](#how-each-file-type-is-processed)
+- [How the AI understands a document](#how-the-ai-understands-a-document)
 - [Development phases](#development-phases)
 - [Getting started](#getting-started)
 - [Development practices](#development-practices)
@@ -491,6 +495,60 @@ page or a worksheet is.
 
 ---
 
+## How the AI understands a document
+
+Once a document is `ready`, three things can be asked of it. All of them are grounded in
+the document itself — the model is instructed never to add outside knowledge, and to say
+so rather than guess.
+
+| Action | What you get |
+|---|---|
+| **Summary** | A short description of what the document says |
+| **Explain simply** | The same content written for someone new to the subject, with specialist terms explained — but conditions, deadlines and figures kept exactly as written |
+| **Extract information** | Key facts as structured data, each with the wording that supports it |
+
+### Citations you can trust
+
+The chain built in Milestone 2 is what makes this work:
+
+```
+file → ContentBlock(provenance) → Chunk(block_ids) → context block → citation
+```
+
+Content is sent to the API as an ordered list of blocks **we build**. Citations come back
+as indices into that same list, so resolving one is a lookup in our own records:
+
+```
+citation index 3 → our chunk → its block ids → "page 4"
+```
+
+**A location is never taken from what the model wrote.** Extraction works differently
+because the API does not allow citations alongside a schema: there, the model returns the
+exact wording it used, and we search our stored text for it. Found → confirmed source.
+Not found → the fact is still shown, explicitly marked *"source not verified"*.
+
+Nothing is ever invented, and nothing unverifiable is dressed up as verified.
+
+### Optimize context for AI (optional)
+
+For large documents you can choose to send the AI less. It is **off by default** and only
+offered when a document is big enough for it to matter.
+
+It works by *selecting* content, not rewriting it: what is kept is byte-identical to what
+the parser produced, so citations stay exact. Headings, tables, and passages containing
+amounts, dates, deadlines and obligations are prioritised; the opening of the document is
+always kept.
+
+**Your uploaded file, its extracted content, its chunks and its source locations are never
+changed.** Optimization only affects what one AI request is given.
+
+### Cost
+
+Results are cached, so opening a document does not re-run anything. Regenerating is an
+explicit action.
+
+---
+
 ## Development phases
 
 Each phase produces something that runs and is tested before the next begins.
@@ -500,8 +558,8 @@ Each phase produces something that runs and is tested before the next begins.
 | **0. Planning** ✅ | Architecture, stack, structure, this document, `CLAUDE.md`, `.gitignore` | Approved by the project owner |
 | **1. Foundation** ✅ | Backend skeleton, config from env vars, logging, error handling, health + readiness probes, database layer with migrations, document read API, React frontend talking to it, test harness | `ruff`, `mypy`, and `pytest` all green; both servers start; frontend reaches the backend |
 | **2. Ingestion** ✅ | All five parsers, the canonical model, normalizer, chunker, upload endpoint, background processing | Every parser is tested against fixtures, **including provenance assertions** and failure cases |
-| **3. AI core** *(not started)* | `LLMProvider` interface, Claude implementation, summarize and explain, prompt templates, citation mapping | Works end-to-end on a real document; unit tests run with a mocked provider |
-| **4. Q&A** | Retrieval, context builder, single- and multi-document Q&A with citations | Answers are correct and citations resolve to the right page/row |
+| **3. AI core** ✅ | `LLMProvider` interface, Claude implementation, summarize and explain, prompt templates, citation mapping | Works end-to-end on a real document; unit tests run with a mocked provider |
+| **4. Q&A** *(not started)* | Retrieval, context builder, single- and multi-document Q&A with citations | Answers are correct and citations resolve to the right page/row |
 | **5. Frontend** | Upload UI, document list with live status, summary view, chat interface with clickable citations | A person can complete the whole flow in a browser without touching the API directly |
 | **6. Hardening** | Full security review, rate limiting, observability, performance work on large files, documentation pass | Security checklist verified; large-file behaviour measured, not assumed |
 
@@ -611,6 +669,11 @@ The API is now on **http://127.0.0.1:8000**:
 | `POST /api/documents` | Upload a file (returns 202; processing runs in the background) |
 | `/api/documents` | Document list with processing status |
 | `/api/documents/{id}/content` | Extracted content blocks, each with its source location |
+| `POST /api/documents/{id}/summary` | AI summary, with citations |
+| `POST /api/documents/{id}/explanation` | Plain-language explanation, with citations |
+| `POST /api/documents/{id}/extraction` | Structured facts, each with a verified source |
+| `/api/documents/{id}/insights` | AI results already generated (free — never calls the AI) |
+| `/api/ai/status` | Whether AI features are configured |
 | `/docs` | Interactive API documentation (Swagger UI) |
 | `/redoc` | The same API reference in ReDoc |
 

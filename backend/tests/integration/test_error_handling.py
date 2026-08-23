@@ -197,6 +197,54 @@ class TestUnexpectedErrorsAreSafe:
         assert response.json()["error"]["code"] == "storage_error"
 
 
+class TestActionableServerErrorsKeepTheirMessage:
+    """A few 5xx errors carry a message that is safe AND useful.
+
+    The generic-message rule exists to stop internal detail escaping. "AI features are
+    not configured" leaks nothing and is something the operator can act on, so hiding it
+    behind "something went wrong" would be unhelpful rather than safe.
+    """
+
+    async def test_a_safe_actionable_message_is_shown(
+        self, app: FastAPI, failing_client: AsyncClient, api_prefix: str
+    ) -> None:
+        from app.core.exceptions import AIConfigurationError
+
+        def _explode() -> None:
+            raise AIConfigurationError(
+                "AI features are not configured on this server. An Anthropic API key is required."
+            )
+
+        app.dependency_overrides[get_document_service] = _explode
+        try:
+            async with failing_client as http_client:
+                response = await http_client.get(f"{api_prefix}/documents")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 500
+        body = response.json()
+        assert body["error"]["code"] == "ai_not_configured"
+        assert "not configured" in body["error"]["message"]
+
+    async def test_ordinary_server_errors_stay_generic(
+        self, app: FastAPI, failing_client: AsyncClient, api_prefix: str
+    ) -> None:
+        """The default is unchanged: opting in is per-error and deliberate."""
+
+        def _explode() -> None:
+            raise StorageError("Failed to write to /var/lib/docstruct/storage")
+
+        app.dependency_overrides[get_document_service] = _explode
+        try:
+            async with failing_client as http_client:
+                response = await http_client.get(f"{api_prefix}/documents")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert "/var/lib/docstruct" not in response.text
+
+
 class TestClientErrorsStayInformative:
     async def test_4xx_messages_are_preserved(
         self, app: FastAPI, failing_client: AsyncClient, api_prefix: str

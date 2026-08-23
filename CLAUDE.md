@@ -11,10 +11,11 @@ DocStruct AI is an AI-powered document intelligence platform. Users upload colle
 files (PDF, DOCX, TXT, CSV, XLSX); the system extracts their contents, structures them,
 summarizes and explains them, and answers questions about them with source citations.
 
-**Status: Milestone 2 (Document Ingestion) complete. Milestone 3 has NOT started.**
-Files can be uploaded and are parsed into structured, traceable content. No AI, LLM,
-embeddings, retrieval, OCR, or authentication code exists yet — those belong to later
-milestones.
+**Status: Milestone 3 (AI Understanding) complete. Milestone 4 has NOT started.**
+Documents can be uploaded, parsed into traceable content, and turned into summaries,
+plain-language explanations and structured facts — each cited back to the source. No
+conversational Q&A, retrieval/RAG, embeddings, vector store, OCR, or authentication code
+exists yet.
 
 ---
 
@@ -254,7 +255,7 @@ Documentation that describes a system which no longer exists is worse than no do
 
 ---
 
-## 11. Current state (Milestone 2)
+## 11. Current state (Milestone 3)
 
 ### What exists
 
@@ -278,14 +279,21 @@ Documentation that describes a system which no longer exists is worse than no do
 | Normalizer + structure-aware chunker | Done — `app/ingestion/` |
 | Background processing + startup reaper | Done — `app/services/ingestion_service.py`, `job_service.py` |
 | Frontend upload, live status, content viewer | Done — `frontend/src/components/` |
-| Test suite | Done — 352 tests |
+| Claude provider behind `LLMProvider` | Done — `app/ai/providers/` |
+| Context building + citation resolution | Done — `app/ai/context_builder.py`, `citations.py` |
+| Optional context optimization (opt-in) | Done — `app/ai/optimization.py` |
+| Summary, explanation, extraction | Done — `app/services/analysis_service.py` |
+| AI result cache | Done — `app/models/db/ai_result.py` |
+| Frontend AI panel with sources | Done — `frontend/src/components/DocumentInsights.tsx` |
+| Test suite | Done — 446 tests (+3 manual, excluded) |
 
 ### What deliberately does not exist yet
 
-* **`LLMProvider`, prompts, citations** — Milestone 3. No stub interface was created,
-  because an empty interface written before its first use gets the abstraction wrong.
 * **`Retriever`, embeddings, search** — Milestone 4. Chunks are stored and carry their
   `block_ids`, so the retrieval layer has everything it needs when it arrives.
+* **Conversational Q&A** — Milestone 4.
+* **Streaming AI responses to the browser** — deferred; the server streams from the API
+  internally to avoid timeouts, but returns one JSON response.
 * **OCR** — a scanned PDF fails with `failure_code="requires_ocr"` rather than
   silently returning nothing.
 * **Authentication** — every request runs as `DEFAULT_OWNER_ID` in `app/api/deps.py`.
@@ -402,3 +410,63 @@ Headings start new chunks; tables and schema blocks are never split. Every chunk
 `block_ids` — the middle link in the citation chain. Sizes come from settings
 (`chunk_target_chars`, `chunk_overlap_chars`); the token count is a documented
 character-based estimate, not a real tokenizer.
+
+
+---
+
+## 14. AI rules (Milestone 3)
+
+### Use the model only for language understanding
+
+The single most important rule of this layer. Building context, choosing chunks,
+measuring size, resolving provenance, validating output, and caching are all **ordinary
+Python** — deterministic, free, instant, and testable without a network. Do not reach for
+the model to do something code can do; it costs money, adds latency, and introduces a
+place where information can silently change.
+
+### Two paths, because the API forces it
+
+**Citations and structured outputs cannot be combined** — the API returns 400. So:
+
+| Feature | Output | How provenance works |
+|---|---|---|
+| Summary, Explanation | prose | Native citations. Content is sent as a custom-content document; the API returns `start_block_index` into *the list we built*, which we map to a chunk → block → provenance. |
+| Extraction | JSON schema | The model returns a `source_quote`; we **search our own stored text for it**. Found → real location. Not found → `citation: null`. |
+
+### Never trust a model-supplied location
+
+A location shown to a user is **always** resolved from our own records — an index into a
+list we constructed, or a quote we found in text we stored. `Citation` has no way to be
+built from model output; it either carries provenance from the database or carries
+`None`, displayed as "source not verified".
+
+If you add a feature that shows a source, it must resolve through `app/ai/citations.py`.
+
+### Optional context optimization
+
+* **Off by default. Never automatic.** Opt-in per request.
+* **Selection, not rewriting.** Kept chunks are byte-identical, so citations stay exact.
+* **Read-only.** It must never write to `documents`, `content_blocks`, `chunks`, or
+  storage. Tests assert the originals are untouched.
+* Not offered below `ai_optimization_min_tokens` — trimming a short document only loses
+  detail.
+
+### Prompts
+
+Live in `app/ai/prompts/` with a `VERSION`. The version feeds the cache fingerprint, so
+editing a prompt automatically invalidates results produced by the old one. Never inline
+a prompt string in service code.
+
+### Errors
+
+Every provider failure becomes a typed error from `core/exceptions.py`. Upstream messages
+may name models and internal endpoints, so **none are passed through**. A few AI errors set
+`expose_message = True` because their wording is hand-written, leaks nothing, and is
+actionable ("AI features are not configured"). Only set that flag on a message with no
+interpolated upstream text.
+
+### Testing
+
+**No automated test calls the real API.** Use `tests/fixtures/fake_provider.py`. The
+manual suite in `tests/manual/` is marked `live` and deselected by `pytest.ini`; run it by
+hand with `pytest -m live`.

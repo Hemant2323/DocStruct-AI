@@ -25,6 +25,18 @@ class DocStructError(Exception):
     #: Stable machine-readable code the frontend can branch on.
     code: str = "internal_error"
 
+    #: Whether this error's own message may be shown to the client on a 5xx.
+    #:
+    #: Server-side errors normally return a generic sentence so that internal detail
+    #: cannot escape. A few carry a message that is both safe and genuinely useful —
+    #: "AI features are not configured", "the AI service is busy" — and telling the user
+    #: "something went wrong" instead would hide something they can act on.
+    #:
+    #: Only set this to True for a message written by hand with no interpolation of
+    #: upstream text, paths, or identifiers. It has no effect on 4xx errors, whose
+    #: messages are always shown.
+    expose_message: bool = False
+
     def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.message = message
@@ -104,6 +116,72 @@ class ParserError(ProcessingError):
     """
 
     code = "parser_error"
+
+
+class AIError(ProcessingError):
+    """Base class for failures of the AI layer.
+
+    A ``ProcessingError`` (5xx-class), so ``app.api.errors`` returns a generic message
+    and the technical detail stays in the log. Model provider names, prompts and
+    upstream error text must never reach the client.
+    """
+
+    code = "ai_error"
+
+
+class AIConfigurationError(AIError):
+    """The AI provider is not configured — typically no API key is set.
+
+    Distinct from a transient failure: retrying will not help, and the user needs to be
+    told that the feature is unavailable rather than broken.
+    """
+
+    code = "ai_not_configured"
+    #: Safe to show: written by hand, no upstream text interpolated.
+    expose_message = True
+
+
+class AIUnavailableError(AIError):
+    """The model could not be reached, or refused, or timed out.
+
+    Transient by nature, so the message tells the user to try again shortly.
+    """
+
+    code = "ai_unavailable"
+    #: Safe to show: written by hand, no upstream text interpolated.
+    expose_message = True
+
+
+class InvalidModelResponseError(AIError):
+    """The model replied, but not in the shape the request required.
+
+    Raised when structured output fails schema validation or arrives unparseable.
+    Surfacing this rather than guessing at a repair keeps invented data out of results.
+    """
+
+    code = "invalid_model_response"
+    #: Safe to show: written by hand, no upstream text interpolated.
+    expose_message = True
+
+
+class ContextTooLargeError(ValidationError):
+    """The document is too large to send even after optimization.
+
+    A ``ValidationError`` (4xx-class) because it is a property of the document the user
+    chose, and the message tells them what they can do about it.
+    """
+
+    code = "context_too_large"
+
+
+class InsufficientContentError(ValidationError):
+    """There is not enough extracted content to analyse.
+
+    Raised instead of asking the model to summarise nothing, which would invite it to
+    invent something plausible.
+    """
+
+    code = "insufficient_content"
 
 
 class StorageError(DocStructError):

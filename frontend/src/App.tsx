@@ -1,8 +1,8 @@
 /**
  * Application shell.
  *
- * Milestone 2 renders one page: upload, the document list with live status, and the
- * extracted content of whichever document is selected. Routing arrives in Milestone 5
+ * One page: upload, the document list with live status, and — for whichever document is
+ * selected — its AI analysis and its extracted content. Routing arrives in Milestone 5,
  * when there is more than one screen to route between.
  */
 
@@ -10,6 +10,7 @@ import { useCallback, useState } from "react";
 
 import { BackendStatus } from "@/components/BackendStatus";
 import { DocumentContent } from "@/components/DocumentContent";
+import { DocumentInsights } from "@/components/DocumentInsights";
 import { DocumentList } from "@/components/DocumentList";
 import { DocumentUpload } from "@/components/DocumentUpload";
 import type { DocumentSummary } from "@/types/api";
@@ -47,16 +48,22 @@ export default function App(): React.JSX.Element {
         />
 
         {selected !== null && (
-          <DocumentContent
-            documentId={selected.id}
-            filename={selected.original_filename}
-            onClose={() => setSelected(null)}
-          />
+          <>
+            <DocumentInsights
+              documentId={selected.id}
+              filename={selected.original_filename}
+            />
+            <DocumentContent
+              documentId={selected.id}
+              filename={selected.original_filename}
+              onClose={() => setSelected(null)}
+            />
+          </>
         )}
 
         <footer className="pt-2 text-center text-xs text-slate-500 dark:text-slate-500">
-          Milestone 2 — document ingestion. Summaries, plain-language explanations and
-          question answering arrive in later milestones.
+          Milestone 3 — AI understanding. Conversational question answering arrives in a
+          later milestone.
         </footer>
       </main>
     </div>

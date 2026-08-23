@@ -25,6 +25,10 @@ dependencies = [
     # Text files are often cp1252, not UTF-8; guessing wrong produces mojibake
     # that silently poisons every downstream summary.
     "charset-normalizer>=3.4",
+    # --- AI (Milestone 3) ------------------------------------------------------
+    # The official Anthropic SDK. Never an OpenAI-compatible shim or raw HTTP
+    # (CLAUDE.md §5).
+    "anthropic>=0.40",
 ]
 
 [project.optional-dependencies]
@@ -78,10 +82,18 @@ ignore = [
 # The normalizer's translation table is *made of* look-alike characters — flagging them
 # as ambiguous flags the feature itself.
 "app/ingestion/normalizer.py" = ["RUF001"]
+# citations.py folds smart punctuation so a genuine quote is not rejected over a
+# typographic difference. The look-alike characters are the feature.
+"app/ai/citations.py" = ["RUF001"]
 # Tests deliberately contain smart quotes, ligatures and zero-width characters as inputs.
 "tests/unit/test_normalizer_and_chunker.py" = ["RUF001", "S101"]
+# Deliberately contains smart punctuation as test input for quote verification.
+"tests/unit/test_context_and_citations.py" = ["RUF001", "S101"]
 # A generator script run by hand; printing what it wrote is its whole user interface.
 "tests/fixtures/make_pdf_fixtures.py" = ["T201"]
+# Manual verification is run by hand and reports what the real API returned; printing
+# that is the whole point of the file.
+"tests/manual/*.py" = ["T201"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
@@ -126,7 +138,9 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "-q --strict-markers"
+# `-m "not live"` excludes tests that call real external services. They cost money and
+# are non-deterministic, so they are opt-in only: `pytest -m live`.
+addopts = "-q --strict-markers -m 'not live'"
 markers = [
     "live: tests that call real external services (never run in CI)",
 ]

@@ -5,9 +5,10 @@ autogenerates a migration. A table that is not imported is invisible to Alembic 
 be silently dropped from generated migrations.
 """
 
+from app.models.db.ai_result import AIResultRecord
 from app.models.db.base import Base
 from app.models.db.chunk import ChunkRecord
 from app.models.db.content_block import ContentBlockRecord
 from app.models.db.document import DocumentRecord
 
-__all__ = ["Base", "ChunkRecord", "ContentBlockRecord", "DocumentRecord"]
+__all__ = ["AIResultRecord", "Base", "ChunkRecord", "ContentBlockRecord", "DocumentRecord"]

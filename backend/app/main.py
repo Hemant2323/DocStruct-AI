@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.errors import register_exception_handlers
 from app.api.middleware import RequestContextMiddleware
-from app.api.routes import documents, health
+from app.api.routes import analysis, documents, health
 from app.core.config import Settings, get_settings
 from app.core.database import dispose_engine, get_session_factory
 from app.core.logging import configure_logging, get_logger
@@ -33,7 +33,7 @@ DESCRIPTION = """
 **DocStruct AI** turns collections of documents into information that is structured,
 searchable, and easy to extract.
 
-### Current status — Milestone 2 (document ingestion)
+### Current status — Milestone 3 (AI understanding)
 
 Upload a PDF, DOCX, TXT, CSV or XLSX file and it is parsed into structured content, with
 every piece traceable back to where it came from in the original file.
@@ -42,7 +42,10 @@ Uploads return **202 Accepted** immediately and are processed in the background:
 `GET /documents/{document_id}` until `status` becomes `ready` or `failed`, then read the
 extracted content from `GET /documents/{document_id}/content`.
 
-Summaries, plain-language explanations, and question answering arrive in later milestones.
+Analysis endpoints then turn that content into a summary, a plain-language explanation,
+or structured facts — each cited back to the exact page, line, row or cell it came from.
+
+Conversational question answering arrives in a later milestone.
 
 ### Error format
 
@@ -83,6 +86,15 @@ TAGS_METADATA = [
             "moves through `pending` → `processing` → `ready` (or `failed`); poll "
             "`GET /documents/{document_id}` to follow it. Every extracted block records "
             "where in the source file it came from."
+        ),
+    },
+    {
+        "name": "analysis",
+        "description": (
+            "AI understanding of a document: summaries, plain-language explanations and "
+            "structured extraction. Every result is grounded in the document and cited "
+            "back to it — a source location is only ever shown when it was resolved from "
+            "stored content, never guessed."
         ),
     },
 ]
@@ -171,6 +183,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router, prefix=settings.api_prefix)
     app.include_router(documents.router, prefix=settings.api_prefix)
+    app.include_router(analysis.router, prefix=settings.api_prefix)
+    app.include_router(analysis.status_router, prefix=settings.api_prefix)
 
     return app
 

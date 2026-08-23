@@ -96,9 +96,42 @@ class Settings(BaseSettings):
     # Comma-separated list of allowed browser origins for the frontend dev server.
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
-    # --- AI (not used until Milestone 3; optional so the app runs without it) ---
+    # --- AI ------------------------------------------------------------------
+    # Optional so the application still starts without a key; AI endpoints then
+    # report that they are unconfigured rather than the whole app failing.
     anthropic_api_key: str | None = None
     anthropic_model: str = "claude-opus-5"
+
+    #: Ceiling on the model's reply. Summaries and explanations are short; this is
+    #: sized for a long explanation, not for the document being echoed back.
+    ai_max_output_tokens: int = Field(default=8_000, ge=256, le=64_000)
+
+    #: Thinking depth / overall token spend. "high" is the sweet spot for
+    #: understanding a document correctly, which is the whole point here.
+    ai_effort: str = "high"
+
+    #: Seconds to wait for the model. Generous: a large document with adaptive
+    #: thinking legitimately takes a while.
+    ai_timeout_seconds: float = Field(default=300.0, ge=10.0, le=1800.0)
+
+    #: SDK-level retries for transient failures (429, 5xx, connection errors).
+    ai_max_retries: int = Field(default=2, ge=0, le=5)
+
+    #: Cache the document prefix so the second and third operation on the same
+    #: document are much cheaper. Below ~1024 tokens the API will not cache anyway.
+    ai_prompt_caching: bool = True
+
+    #: Largest context we will send, in estimated tokens. Opus 5 has a 1M window;
+    #: this leaves headroom for the prompt, thinking and the reply.
+    ai_max_context_tokens: int = Field(default=600_000, ge=1_000, le=900_000)
+
+    # --- Optional context optimization ---------------------------------------
+    #: Below this many estimated tokens a document does not need optimizing, and
+    #: the option is not offered. Optimizing a short document only loses detail.
+    ai_optimization_min_tokens: int = Field(default=20_000, ge=1_000)
+
+    #: Share of the token budget an optimized context may use.
+    ai_optimization_target_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
 
     @field_validator("log_level")
     @classmethod
@@ -115,6 +148,24 @@ class Settings(BaseSettings):
         if not value.startswith("/"):
             raise ValueError("api_prefix must start with '/'")
         return value.rstrip("/")
+
+    @field_validator("ai_effort")
+    @classmethod
+    def _validate_ai_effort(cls, value: str) -> str:
+        valid = {"low", "medium", "high", "xhigh", "max"}
+        normalized = value.lower()
+        if normalized not in valid:
+            raise ValueError(f"ai_effort must be one of {sorted(valid)}, got {value!r}")
+        return normalized
+
+    @property
+    def ai_configured(self) -> bool:
+        """Whether an API key is present.
+
+        Checked before an AI request so the user gets "AI is not configured" rather
+        than an authentication failure from a third party.
+        """
+        return bool(self.anthropic_api_key and self.anthropic_api_key.strip())
 
     @model_validator(mode="after")
     def _validate_chunking(self) -> Settings:

@@ -123,10 +123,14 @@ async def docstruct_error_handler(request: Request, exc: DocStructError) -> JSON
         exc_info=is_server_error,
     )
 
-    if is_server_error:
-        # A 5xx means something broke inside the application. Even though these messages
-        # are written by us, withholding them keeps internal wording (paths, backends,
-        # component names) out of the client's hands as the codebase grows.
+    if is_server_error and not exc.expose_message:
+        # A 5xx means something broke inside the application. Withholding the message by
+        # default keeps internal wording (paths, backends, component names) out of the
+        # client's hands as the codebase grows.
+        #
+        # A few errors opt out via `expose_message` because their message is both safe
+        # and actionable — telling someone "something went wrong" when the real answer is
+        # "no API key is configured" hides something they can fix.
         return _error_response(
             request,
             status_code=http_status,
