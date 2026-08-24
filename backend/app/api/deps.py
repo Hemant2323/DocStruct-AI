@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.providers.base import LLMProvider
 from app.ai.providers.claude import ClaudeProvider
+from app.ai.providers.gemini import GeminiProvider
+from app.ai.providers.nvidia import NVIDIAProvider
 from app.core.config import Settings, get_settings
 from app.core.database import get_db_session, get_session_factory
 from app.repositories.ai_result_repo import AIResultRepository
@@ -102,15 +104,49 @@ def get_ai_result_repository(
 _provider: LLMProvider | None = None
 
 
+def _build_provider(settings: Settings) -> LLMProvider:
+    """Construct the provider named by ``settings.ai_provider``.
+
+    Kept separate from :func:`get_llm_provider` so the branching itself — the one part
+    that changes when a provider is added — is a small, direct function that a test can
+    call without going through FastAPI's dependency machinery.
+    """
+    if settings.ai_provider == "nvidia":
+        return NVIDIAProvider(
+            api_key=settings.nvidia_api_key,
+            base_url=settings.nvidia_base_url,
+            model=settings.nvidia_model,
+            timeout_seconds=settings.ai_timeout_seconds,
+            max_retries=settings.ai_max_retries,
+            max_output_tokens=settings.ai_max_output_tokens,
+        )
+
+    if settings.ai_provider == "gemini":
+        return GeminiProvider(
+            api_key=settings.gemini_api_key,
+            base_url=settings.gemini_base_url,
+            model=settings.gemini_model,
+            timeout_seconds=settings.ai_timeout_seconds,
+            max_retries=settings.ai_max_retries,
+            max_output_tokens=settings.ai_max_output_tokens,
+        )
+
+    # "claude" is the default and the fallback for any value the validator already
+    # guarantees is one of the three known names — this branch cannot see anything else.
+    return ClaudeProvider(settings)
+
+
 def get_llm_provider(settings: Annotated[Settings, Depends(get_settings)]) -> LLMProvider:
     """Return the configured language model provider.
 
     Typed as the interface, not the implementation, so swapping providers later touches
-    this function and nothing else.
+    this function and nothing else. Which concrete class gets built is controlled by
+    ``AI_PROVIDER`` ("claude", the default, "nvidia", or "gemini") and decided once, the
+    first time an AI feature is used.
     """
     global _provider
     if _provider is None:
-        _provider = ClaudeProvider(settings)
+        _provider = _build_provider(settings)
     return _provider
 
 

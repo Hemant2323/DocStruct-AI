@@ -102,6 +102,32 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     anthropic_model: str = "claude-opus-5"
 
+    #: Where to send API requests. Empty means Anthropic's own endpoint.
+    #:
+    #: Set this to use an Anthropic-compatible provider instead. The SDK also reads an
+    #: ANTHROPIC_BASE_URL environment variable on its own, but that does not help here:
+    #: pydantic-settings parses `.env` itself and never exports into os.environ, so a
+    #: value written there would be invisible to the SDK unless it is passed explicitly.
+    anthropic_base_url: str | None = None
+
+    # --- Alternative provider: NVIDIA NIM (OpenAI-compatible) -----------------
+    #: Which LLMProvider implementation `app.api.deps.get_llm_provider()` builds.
+    #: Defaults to "claude" so existing behaviour is unchanged unless this is set.
+    ai_provider: str = "claude"
+
+    #: Optional so the application still starts without a key; NVIDIAProvider then
+    #: reports itself as unconfigured, exactly like ClaudeProvider does.
+    nvidia_api_key: str | None = None
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_model: str = "deepseek-ai/deepseek-v4-flash-0731"
+
+    # --- Alternative provider: Google Gemini -----------------------------------
+    #: Optional so the application still starts without a key; GeminiProvider then
+    #: reports itself as unconfigured, exactly like ClaudeProvider and NVIDIAProvider do.
+    gemini_api_key: str | None = None
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    gemini_model: str = "gemini-2.5-flash"
+
     #: Ceiling on the model's reply. Summaries and explanations are short; this is
     #: sized for a long explanation, not for the document being echoed back.
     ai_max_output_tokens: int = Field(default=8_000, ge=256, le=64_000)
@@ -148,6 +174,55 @@ class Settings(BaseSettings):
         if not value.startswith("/"):
             raise ValueError("api_prefix must start with '/'")
         return value.rstrip("/")
+
+    @field_validator("anthropic_base_url")
+    @classmethod
+    def _validate_base_url(cls, value: str | None) -> str | None:
+        """Reject a base URL that is obviously wrong, and normalise an empty one.
+
+        A blank entry in `.env` is a common way to "unset" a value, and it should mean
+        "use the default endpoint" rather than "send requests to an empty host".
+        """
+        if value is None or not value.strip():
+            return None
+
+        cleaned = value.strip().rstrip("/")
+        if not cleaned.startswith(("http://", "https://")):
+            raise ValueError(
+                f"anthropic_base_url must start with http:// or https://, got {value!r}"
+            )
+        return cleaned
+
+    @field_validator("ai_provider")
+    @classmethod
+    def _validate_ai_provider(cls, value: str) -> str:
+        """Reject an unknown provider name at startup rather than at the first request.
+
+        `get_llm_provider()` branches on this value; failing here means a typo in
+        `.env` is caught immediately instead of surfacing as a confusing runtime error
+        the first time someone clicks an AI button.
+        """
+        valid = {"claude", "nvidia", "gemini"}
+        normalized = value.strip().lower()
+        if normalized not in valid:
+            raise ValueError(f"ai_provider must be one of {sorted(valid)}, got {value!r}")
+        return normalized
+
+    @field_validator("nvidia_base_url")
+    @classmethod
+    def _validate_nvidia_base_url(cls, value: str) -> str:
+        cleaned = value.strip().rstrip("/")
+        if not cleaned.startswith(("http://", "https://")):
+            raise ValueError(f"nvidia_base_url must start with http:// or https://, got {value!r}")
+        return cleaned
+
+    @field_validator("gemini_base_url")
+    @classmethod
+    def _validate_gemini_base_url(cls, value: str) -> str:
+        cleaned = value.strip().rstrip("/")
+        if not cleaned.startswith(("http://", "https://")):
+            raise ValueError(f"gemini_base_url must start with http:// or https://, got {value!r}")
+        return cleaned
 
     @field_validator("ai_effort")
     @classmethod

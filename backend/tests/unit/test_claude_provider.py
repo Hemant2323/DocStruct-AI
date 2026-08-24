@@ -76,6 +76,26 @@ class TestConfiguration:
         """An empty string in .env is a common mistake and must not look configured."""
         assert ClaudeProvider(_settings(anthropic_api_key="   ")).is_configured is False
 
+    def test_uses_anthropics_endpoint_by_default(self) -> None:
+        provider = ClaudeProvider(_settings())
+
+        assert "api.anthropic.com" in str(provider._client.base_url)
+
+    def test_a_custom_endpoint_is_used_when_configured(self) -> None:
+        """Lets the same provider talk to an Anthropic-compatible service."""
+        provider = ClaudeProvider(_settings(anthropic_base_url="https://api.example.dev/v1"))
+
+        assert "api.example.dev" in str(provider._client.base_url)
+
+    def test_a_custom_endpoint_does_not_change_anything_else(self) -> None:
+        """Only the destination changes — not the abstraction or the request shape."""
+        provider = ClaudeProvider(
+            _settings(anthropic_base_url="https://api.example.dev/v1", anthropic_model="auto")
+        )
+
+        assert provider.is_configured is True
+        assert provider.model_name == "auto"
+
     def test_model_name_comes_from_settings(self) -> None:
         provider = ClaudeProvider(_settings(anthropic_model="claude-opus-5"))
         assert provider.model_name == "claude-opus-5"

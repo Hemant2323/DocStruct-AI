@@ -17,6 +17,7 @@ Two API details drive the shape of this file:
 from __future__ import annotations
 
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 import anthropic
 from anthropic.types import MessageParam, OutputConfigParam
@@ -64,13 +65,30 @@ class ClaudeProvider(LLMProvider):
         self._client: anthropic.AsyncAnthropic | None = None
 
         if settings.ai_configured:
+            # `base_url` is omitted entirely when unset so the SDK uses its own default;
+            # passing None explicitly would also work, but leaving it out keeps the
+            # default path identical to before this option existed.
+            optional: dict[str, Any] = {}
+            if settings.anthropic_base_url:
+                optional["base_url"] = settings.anthropic_base_url
+
             self._client = anthropic.AsyncAnthropic(
                 api_key=settings.anthropic_api_key,
                 timeout=settings.ai_timeout_seconds,
                 # The SDK retries 429s, 5xx and connection errors on its own, which is
                 # the right layer for it — no hand-rolled retry loop.
                 max_retries=settings.ai_max_retries,
+                **optional,
             )
+
+            if settings.anthropic_base_url:
+                # Host only: a base URL can legitimately carry a path, and it must never
+                # be logged in a form that could include credentials.
+                logger.info(
+                    "Using a custom API endpoint host=%s model=%s",
+                    urlsplit(settings.anthropic_base_url).netloc,
+                    settings.anthropic_model,
+                )
 
     @property
     def model_name(self) -> str:
