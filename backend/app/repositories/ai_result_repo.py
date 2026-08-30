@@ -61,12 +61,26 @@ def _field_from_dict(data: dict[str, Any]) -> ExtractedField:
     )
 
 
+def _record_to_dicts(fields: tuple[ExtractedField, ...]) -> list[dict[str, Any]]:
+    """Serialise one multi-record structure record — a tuple of fields, exactly like
+    ``Insight.fields``'s shape — reusing ``_field_to_dict`` per field rather than
+    duplicating its citation-handling logic."""
+    return [_field_to_dict(item) for item in fields]
+
+
+def _record_from_dicts(items: list[dict[str, Any]]) -> tuple[ExtractedField, ...]:
+    """Deserialise one stored record back into a tuple of fields, reusing
+    ``_field_from_dict`` per field."""
+    return tuple(_field_from_dict(item) for item in items)
+
+
 def _to_domain(record: AIResultRecord) -> Insight:
     return Insight(
         document_id=record.document_id,
         kind=InsightKind(record.kind),
         content=record.content,
         fields=tuple(_field_from_dict(item) for item in (record.fields or [])),
+        records=tuple(_record_from_dicts(item) for item in (record.records or [])),
         citations=tuple(_citation_from_dict(item) for item in (record.citations or [])),
         context_mode=ContextMode(record.context_mode),
         model=record.model,
@@ -137,6 +151,7 @@ class AIResultRepository:
 
         record.content = insight.content
         record.fields = [_field_to_dict(item) for item in insight.fields]
+        record.records = [_record_to_dicts(item) for item in insight.records]
         record.citations = [_citation_to_dict(item) for item in insight.citations]
         record.warnings = list(insight.warnings)
         record.context_mode = insight.context_mode

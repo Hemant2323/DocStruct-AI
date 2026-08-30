@@ -1,12 +1,19 @@
 /** Typed wrappers around the AI analysis endpoints. */
 
-import { apiRequest } from "@/api/client";
+import { apiRequest, apiRequestBlob, type DownloadedFile } from "@/api/client";
 import type {
   AIStatus,
   AnalysisOptions,
+  AskRequest,
+  AskResponse,
   ContextPreview,
   Insight,
   InsightListResponse,
+  StructureExportFormat,
+  StructureInput,
+  StructureRequest,
+  StructureResponse,
+  StructureSchema,
 } from "@/types/api";
 
 /**
@@ -65,4 +72,68 @@ export async function getContextPreview(id: string): Promise<ContextPreview> {
 /** Check whether the server can make AI requests at all. */
 export async function getAIStatus(): Promise<AIStatus> {
   return apiRequest<AIStatus>("/ai/status");
+}
+
+/**
+ * Ask a question about a document.
+ *
+ * Unlike summary/explanation/extraction, this is never cached: two different questions
+ * about the same document share nothing to cache against, and the endpoint does not
+ * support multi-turn conversation yet. Every call is a fresh, billed request.
+ */
+export async function askQuestion(
+  id: string,
+  question: string,
+  topK?: number,
+): Promise<AskResponse> {
+  const body: AskRequest = {
+    question,
+    ...(topK !== undefined ? { top_k: topK } : {}),
+  };
+  return apiRequest<AskResponse>(`/documents/${id}/ask`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Turn a document into a structured, multi-record table.
+ *
+ * `input` is either `{ instruction }` — a plain-language description of the table
+ * wanted, from which the server works out the fields and returns them as `schema_used` —
+ * or `{ schema }`, naming the fields explicitly. The union makes sending both
+ * unrepresentable; the server rejects that combination, but it should never get that far.
+ *
+ * Returns every matching record the document describes, not just the first. Cached per
+ * resolved schema; pass `refresh` to regenerate.
+ */
+export async function structureDocument(
+  id: string,
+  input: StructureInput,
+  refresh = false,
+): Promise<StructureResponse> {
+  const body: StructureRequest = { ...input, refresh };
+  return apiRequest<StructureResponse>(`/documents/${id}/structure`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Export an already-generated `/structure` result as a downloadable file.
+ *
+ * Never calls the AI model: `schema` must match a previously generated `/structure`
+ * result exactly (field order does not matter) or the server responds 404. The response
+ * is a binary file rather than JSON, so this goes through {@link apiRequestBlob} instead
+ * of {@link apiRequest}.
+ */
+export async function exportStructure(
+  id: string,
+  schema: StructureSchema,
+  format: StructureExportFormat,
+): Promise<DownloadedFile> {
+  return apiRequestBlob(`/documents/${id}/structure/export?format=${format}`, {
+    method: "POST",
+    body: JSON.stringify({ schema }),
+  });
 }

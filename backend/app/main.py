@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.errors import register_exception_handlers
 from app.api.middleware import RequestContextMiddleware
-from app.api.routes import analysis, documents, health
+from app.api.routes import analysis, conversion, documents, health
 from app.core.config import Settings, get_settings
 from app.core.database import dispose_engine, get_session_factory
 from app.core.logging import configure_logging, get_logger
@@ -95,6 +95,18 @@ TAGS_METADATA = [
             "structured extraction. Every result is grounded in the document and cited "
             "back to it — a source location is only ever shown when it was resolved from "
             "stored content, never guessed."
+        ),
+    },
+    {
+        "name": "conversion",
+        "description": (
+            "Turning a document into a new, organized one. Describe the document you want "
+            "and it is rebuilt from the source's own content — reorganized, and with "
+            "inconsistently written values standardized. Nothing is invented: every value "
+            "is either copied from the source or a recorded correction of something "
+            "copied from it, corrections that could not be proven are listed rather than "
+            "applied, and unsafe ones are refused and reported. Results are stored, so "
+            "fetching one again costs nothing and never re-runs the AI."
         ),
     },
 ]
@@ -185,6 +197,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(documents.router, prefix=settings.api_prefix)
     app.include_router(analysis.router, prefix=settings.api_prefix)
     app.include_router(analysis.status_router, prefix=settings.api_prefix)
+    app.include_router(conversion.router, prefix=settings.api_prefix)
 
     return app
 

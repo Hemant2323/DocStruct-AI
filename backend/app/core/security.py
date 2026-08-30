@@ -12,6 +12,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Protocol
+from urllib.parse import quote
 
 from app.core.exceptions import FileTooLargeError, ValidationError
 
@@ -144,3 +145,34 @@ def sanitize_filename(filename: str | None) -> str:
             cleaned = cleaned[:MAX_FILENAME_LENGTH]
 
     return cleaned
+
+
+def content_disposition_attachment(filename: str) -> str:
+    """Build a ``Content-Disposition`` header that survives a non-ASCII filename.
+
+    HTTP header values are latin-1. A perfectly reasonable filename — a report titled in
+    Devanagari, a spreadsheet a user uploaded with a Chinese name — is therefore not
+    directly expressible, and interpolating one raises ``UnicodeEncodeError`` while the
+    response is being sent. The user sees a failed download for a file that was built
+    correctly.
+
+    RFC 6266 solves this with two parameters: a plain ``filename`` holding an ASCII
+    approximation for old clients, and ``filename*`` holding the real name percent-encoded
+    as UTF-8, which every current browser prefers. Emitting both means the download works
+    everywhere and keeps its real name where that is supported.
+
+    The name is sanitised first, so control characters, quotes and path separators are
+    already gone before either parameter is built.
+    """
+    safe = sanitize_filename(filename)
+
+    # Keep the extension on the ASCII fallback: a name that transliterates to nothing
+    # should still arrive as "download.xlsx" rather than as an extensionless blob.
+    stem, dot, extension = safe.rpartition(".")
+    if not dot:
+        stem, extension = safe, ""
+    ascii_stem = stem.encode("ascii", "ignore").decode("ascii").strip(". ") or "download"
+    fallback = f"{ascii_stem}.{extension}" if extension else ascii_stem
+
+    encoded = quote(safe, safe="")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"

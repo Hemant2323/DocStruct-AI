@@ -29,13 +29,15 @@ dependencies = [
     # The official Anthropic SDK. Never an OpenAI-compatible shim or raw HTTP
     # (CLAUDE.md §5).
     "anthropic>=0.40",
+    # Used directly (no SDK) by the NVIDIA and Gemini providers/embedder for their REST
+    # calls. Production code, not just tests — must not be dev-only.
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
-    "httpx>=0.27",
     "ruff>=0.8",
     "mypy>=1.13",
 ]

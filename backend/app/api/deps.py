@@ -12,6 +12,8 @@ from typing import Annotated
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.embeddings.base import Embedder
+from app.ai.embeddings.gemini import GeminiEmbedder
 from app.ai.providers.base import LLMProvider
 from app.ai.providers.claude import ClaudeProvider
 from app.ai.providers.gemini import GeminiProvider
@@ -20,12 +22,19 @@ from app.core.config import Settings, get_settings
 from app.core.database import get_db_session, get_session_factory
 from app.repositories.ai_result_repo import AIResultRepository
 from app.repositories.block_repo import ContentBlockRepository
+from app.repositories.chunk_embedding_repo import ChunkEmbeddingRepository
 from app.repositories.chunk_repo import ChunkRepository
+from app.repositories.conversion_repo import ConversionRepository
 from app.repositories.document_repo import DocumentRepository
+from app.retrieval.base import Retriever
+from app.retrieval.cosine import CosineSimilarityRetriever
 from app.services.analysis_service import AnalysisService
+from app.services.conversion_service import ConversionService
 from app.services.document_service import DocumentService
+from app.services.export_service import ExportService
 from app.services.ingestion_service import IngestionService
 from app.services.job_service import JobService
+from app.services.qa_service import QAService
 from app.storage.base import FileStorage
 from app.storage.local import LocalFileStorage
 
@@ -93,6 +102,13 @@ def get_ai_result_repository(
 ) -> AIResultRepository:
     """Return an AI result repository bound to this request's session."""
     return AIResultRepository(session)
+
+
+def get_chunk_embedding_repository(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ChunkEmbeddingRepository:
+    """Return a chunk embedding repository bound to this request's session."""
+    return ChunkEmbeddingRepository(session)
 
 
 #: Process-wide provider. Held here rather than built per request because the client
@@ -179,17 +195,126 @@ def get_analysis_service(
     )
 
 
+def get_export_service(
+    provider: Annotated[LLMProvider, Depends(get_llm_provider)],
+    documents: Annotated[DocumentRepository, Depends(get_document_repository)],
+    results: Annotated[AIResultRepository, Depends(get_ai_result_repository)],
+) -> ExportService:
+    """Return a fully wired export service.
+
+    Depends on the provider only to read its ``model_name`` when recomputing a cache
+    fingerprint — export never calls the provider, matching `ExportService`'s own
+    read-only contract.
+    """
+    return ExportService(provider=provider, documents=documents, results=results)
+
+
+#: Process-wide embedder, held for the same reason as `_provider`: it owns an HTTP
+#: connection pool that should not be rebuilt on every call.
+_embedder: Embedder | None = None
+
+
+def get_embedder(settings: Annotated[Settings, Depends(get_settings)]) -> Embedder:
+    """Return the configured embedding provider.
+
+    Only one embedding implementation exists (Gemini's) — unlike `get_llm_provider`,
+    which branches across three. Typed as the interface anyway, so adding a second
+    embedding provider later touches only this function.
+
+    Uses `gemini_embedding_model`, not `gemini_model` — the latter is a generation/chat
+    model (GeminiProvider's), which is not a valid model for the embeddings endpoint.
+    """
+    global _embedder
+    if _embedder is None:
+        _embedder = GeminiEmbedder(
+            api_key=settings.gemini_api_key,
+            base_url=settings.gemini_base_url,
+            model=settings.gemini_embedding_model,
+            timeout_seconds=settings.ai_timeout_seconds,
+            max_retries=settings.ai_max_retries,
+        )
+    return _embedder
+
+
+def reset_embedder() -> None:
+    """Drop the cached embedder.
+
+    Used by tests, which change settings between cases and would otherwise get an
+    embedder built from a previous test's configuration. Mirrors `reset_llm_provider`.
+    """
+    global _embedder
+    _embedder = None
+
+
+def get_retriever(
+    embedder: Annotated[Embedder, Depends(get_embedder)],
+    chunks: Annotated[ChunkRepository, Depends(get_chunk_repository)],
+    chunk_embeddings: Annotated[ChunkEmbeddingRepository, Depends(get_chunk_embedding_repository)],
+) -> Retriever:
+    """Return the configured retriever.
+
+    Typed as the interface, not the implementation, so swapping the retrieval strategy
+    later touches this function and nothing else — the same reasoning as
+    `get_llm_provider`.
+    """
+    return CosineSimilarityRetriever(embedder=embedder, chunks=chunks, embeddings=chunk_embeddings)
+
+
+def get_qa_service(
+    retriever: Annotated[Retriever, Depends(get_retriever)],
+    provider: Annotated[LLMProvider, Depends(get_llm_provider)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    documents: Annotated[DocumentRepository, Depends(get_document_repository)],
+    blocks: Annotated[ContentBlockRepository, Depends(get_block_repository)],
+) -> QAService:
+    """Return a fully wired Q&A service."""
+    return QAService(
+        retriever=retriever,
+        provider=provider,
+        settings=settings,
+        documents=documents,
+        blocks=blocks,
+    )
+
+
 def get_ingestion_service(
     storage: Annotated[FileStorage, Depends(get_file_storage)],
     settings: Annotated[Settings, Depends(get_settings)],
+    embedder: Annotated[Embedder, Depends(get_embedder)],
 ) -> IngestionService:
     """Return the ingestion pipeline.
 
     Built with the session **factory**, not the request's session. Ingestion runs in a
     background task after the response has been sent, by which point the request-scoped
     session is already committed and closed — using it would fail at runtime.
+
+    The embedder is passed through so ingestion can generate chunk embeddings after a
+    document is ready — see `IngestionService._generate_embeddings`. Its own
+    `is_configured` check means this is safe to wire unconditionally: an unconfigured
+    embedder simply results in ingestion skipping that step, exactly as before this was
+    wired in.
     """
-    return IngestionService(get_session_factory(), storage, settings)
+    return IngestionService(get_session_factory(), storage, settings, embedder)
+
+
+def get_conversion_repository(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ConversionRepository:
+    """Return a conversion repository bound to this request's session."""
+    return ConversionRepository(session)
+
+
+def get_conversion_service(
+    analysis: Annotated[AnalysisService, Depends(get_analysis_service)],
+    provider: Annotated[LLMProvider, Depends(get_llm_provider)],
+) -> ConversionService:
+    """Return a fully wired conversion service.
+
+    Built on top of `AnalysisService` rather than beside it: conversion reads its source
+    records through the extraction pipeline that already exists, and does not have one
+    of its own.
+    """
+    return ConversionService(analysis=analysis, provider=provider)
 
 
 def get_job_service(request: Request) -> JobService:
@@ -212,3 +337,7 @@ IngestionServiceDep = Annotated[IngestionService, Depends(get_ingestion_service)
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
 AnalysisServiceDep = Annotated[AnalysisService, Depends(get_analysis_service)]
 LLMProviderDep = Annotated[LLMProvider, Depends(get_llm_provider)]
+QAServiceDep = Annotated[QAService, Depends(get_qa_service)]
+ExportServiceDep = Annotated[ExportService, Depends(get_export_service)]
+ConversionServiceDep = Annotated[ConversionService, Depends(get_conversion_service)]
+ConversionRepositoryDep = Annotated[ConversionRepository, Depends(get_conversion_repository)]

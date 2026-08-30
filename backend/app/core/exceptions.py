@@ -184,6 +184,27 @@ class InsufficientContentError(ValidationError):
     code = "insufficient_content"
 
 
+class InvalidStructureSchemaError(ValidationError):
+    """A user-requested structure schema (Milestone 4.5) is malformed or unsafe.
+
+    Covers every rejection reason — empty schema, too many fields, a bad field name, an
+    unsupported type — under one code. ``details`` carries which check failed.
+    """
+
+    code = "invalid_structure_schema"
+
+
+class EmbeddingsNotAvailableError(ValidationError):
+    """The document has content, but no usable embedding exists for it yet.
+
+    Distinct from :class:`InsufficientContentError`: the document itself is fine, but
+    retrieval has nothing to search because embeddings were never computed, or every one
+    that exists is stale (its chunk's text has since changed) or otherwise unusable.
+    """
+
+    code = "embeddings_not_available"
+
+
 class StorageError(DocStructError):
     """Reading from or writing to the file store failed."""
 

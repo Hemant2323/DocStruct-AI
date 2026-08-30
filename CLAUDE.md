@@ -11,7 +11,9 @@ DocStruct AI is an AI-powered document intelligence platform. Users upload colle
 files (PDF, DOCX, TXT, CSV, XLSX); the system extracts their contents, structures them,
 summarizes and explains them, and answers questions about them with source citations.
 
-**Status: Milestone 3 (AI Understanding) complete. Milestone 4 has NOT started.**
+**Status: Milestone 4 (retrieval, Q&A, multi-record structuring, export) complete.
+Document conversion — building a new, organized document from an existing one — is
+complete on the backend; its frontend is not built yet.**
 Documents can be uploaded, parsed into traceable content, and turned into summaries,
 plain-language explanations and structured facts — each cited back to the source. No
 conversational Q&A, retrieval/RAG, embeddings, vector store, OCR, or authentication code
@@ -255,7 +257,7 @@ Documentation that describes a system which no longer exists is worse than no do
 
 ---
 
-## 11. Current state (Milestone 3)
+## 11. Current state (Milestone 3 baseline)
 
 ### What exists
 
@@ -470,3 +472,75 @@ interpolated upstream text.
 **No automated test calls the real API.** Use `tests/fixtures/fake_provider.py`. The
 manual suite in `tests/manual/` is marked `live` and deselected by `pytest.ini`; run it by
 hand with `pytest -m live`.
+
+
+---
+
+## 15. Document conversion rules
+
+Conversion is **not** the same feature as `/structure`. Structure answers "what values
+does this document contain?" and returns a table. Conversion answers "what document does
+the user want built out of those values?" and returns a new, organized document with an
+audit of everything that was changed on the way.
+
+### The rule the whole feature rests on
+
+**The model proposes; Python decides.** Two AI calls happen, and neither produces document
+content:
+
+1. **A plan** — which sections exist, what goes in them, how they are grouped, ordered and
+   filtered (`ai/prompts/conversion_plan.py`).
+2. **Correction proposals** — which values look inconsistently written
+   (`ai/prompts/conversion_corrections.py`).
+
+Everything after that is ordinary Python: `ai/corrections.py` validates, `ai/assembly.py`
+builds the document, `services/conversion_render.py` renders it. Never ask a model to emit
+the finished document — besides being unverifiable, the response would grow with the
+document, which is how an earlier milestone hit the provider's output-token ceiling.
+
+### Corrections are never applied on the model's word
+
+Every proposal passes five deterministic gates in `ai/corrections.py`. It must **anchor**
+(the value it claims to be changing must actually be there), it must **prove itself under
+its own kind** (a date reformat must parse to the same day; a case fix may change nothing
+but case; a vocabulary fix must land in a set the plan declared; a spelling fix must stay
+within a similarity bound), and it must **not add material**. Only `HIGH` confidence is
+applied — `MEDIUM` and `LOW` become suggestions with the original value left standing.
+Rejections are kept, with reasons, because "the AI tried to change this and was refused"
+is something a reviewer of a financial document needs to see.
+
+A model claiming `confidence: high` on renaming one customer to another is refused. That
+is a test, not an aspiration.
+
+### Adding a correction kind
+
+Add the member to `CorrectionKind`, then add its proof to `_check_kind`. A kind with no
+proof must never fall through to "allowed" — that is why the dispatch ends in an explicit
+rejection rather than a default.
+
+### Nothing is invented
+
+Every value in a converted document is `SOURCE`, `CORRECTED` (with the original and the
+audit id kept), `STRUCTURAL` (a heading the user asked for), or `ABSENT`. There is no
+representation for "text that appeared from nowhere". A field the source does not state
+stays blank in every output format.
+
+### Persistence and retrieval
+
+Conversions live in their own table (`document_conversions`), not in `ai_results` — they
+carry a section tree, a plan and a three-way audit that table has no column for. There is
+**no conversion-level cache**: each run is its own row, because the same instruction
+legitimately yields a different document. `refresh` controls only whether the *extraction*
+behind it is reused.
+
+**Retrieval and export are database-only.** No `GET` on a conversion may call a provider,
+re-extract, or re-run the conversion. Markdown is returned from the stored rendering
+verbatim rather than re-rendered, so a download cannot disagree with the preview.
+
+### Output formats
+
+Markdown, DOCX, XLSX and JSON — all four from dependencies the project already had.
+Spreadsheet values are escaped against formula injection, and filenames go through
+`content_disposition_attachment()`, which emits RFC 6266's ASCII fallback plus the real
+UTF-8 name (HTTP headers are latin-1, so a report titled in Devanagari would otherwise
+break the download).

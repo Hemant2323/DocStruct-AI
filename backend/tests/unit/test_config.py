@@ -239,6 +239,27 @@ class TestGeminiSettings:
         assert settings.gemini_base_url == "https://generativelanguage.googleapis.com/v1beta"
         assert settings.gemini_model == "gemini-2.5-flash"
 
+    def test_embedding_model_defaults_to_a_real_embedding_model_not_the_chat_model(
+        self,
+    ) -> None:
+        """The generation and embedding models must be distinct settings — a chat model
+        name is not valid for the embeddings endpoint."""
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+        assert settings.gemini_embedding_model == "gemini-embedding-2-preview"
+        assert settings.gemini_embedding_model != settings.gemini_model
+
+    def test_embedding_model_is_configurable_independently_of_the_chat_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-3-preview")
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-3.6-flash")
+
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+        assert settings.gemini_embedding_model == "gemini-embedding-3-preview"
+        assert settings.gemini_model == "gemini-3.6-flash"
+
     def test_no_key_has_a_real_default(self) -> None:
         """A secret must never carry a usable default value baked into source."""
         assert Settings(_env_file=None).gemini_api_key is None  # type: ignore[call-arg]

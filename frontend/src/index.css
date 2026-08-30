@@ -1,13 +1,144 @@
 @import "tailwindcss";
 
-/* Tailwind v4 configures the design system in CSS rather than a JS config file. */
+/* ---------------------------------------------------------------------------
+   Theme switching
+
+   Tailwind's `dark:` variant follows the OS by default, which leaves a user no
+   way to override it. Re-pointing the variant at a `data-theme` attribute makes
+   every existing `dark:` class in the app respond to an explicit choice instead
+   — without editing a single component.
+
+   The attribute always holds a *resolved* value ("light" or "dark"), never
+   "system": the preference may be "follow the OS", but the DOM should not have
+   to be interpreted. ThemeProvider does that resolution, and re-resolves when
+   the OS setting changes.
+--------------------------------------------------------------------------- */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ---------------------------------------------------------------------------
+   Design tokens
+
+   Tailwind v4 emits these as custom properties on `:root` and its utilities
+   reference them by `var()`. That is what lets the dark block further down
+   re-point a token and have every `bg-surface`, `text-ink` and `border-line`
+   in the app follow, with no duplicated `dark:` pair per element.
+
+   The palette is deliberately narrow. Neutrals carry the interface; colour is
+   reserved for state the backend already distinguishes — a source that was
+   verified, a correction that was only suggested, one that was refused. Nothing
+   here exists to decorate.
+--------------------------------------------------------------------------- */
 @theme {
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Surfaces, from furthest back to nearest front. */
+  --color-canvas: #fafafa;
+  --color-surface: #ffffff;
+  --color-sunken: #f4f4f5;
+
+  /* Hairlines do the structural work that cards and shadows would otherwise. */
+  --color-line: #e4e4e7;
+  --color-line-strong: #d4d4d8;
+
+  /* Text, in three weights of emphasis. */
+  --color-ink: #18181b;
+  --color-ink-muted: #52525b;
+  --color-ink-subtle: #71717a;
+
+  /* One accent, used only for the primary action, the active tab marker and
+     focus rings. Desaturated on purpose: a vivid brand blue reads as template. */
+  --color-accent: #2a5bd7;
+  --color-accent-hover: #1e47b0;
+  --color-accent-ink: #ffffff;
+  --color-accent-soft: #eef2fd;
+
+  /* State. Each maps to a distinction the product actually makes. */
+  --color-positive: #15803d; /* verified source, ready document */
+  --color-positive-soft: #ecfdf3;
+  --color-caution: #b45309; /* suggested but not applied */
+  --color-caution-soft: #fffbeb;
+  --color-critical: #b91c1c; /* refused correction, failed processing */
+  --color-critical-soft: #fef2f2;
+
+  /* Two radii, applied consistently: controls are tighter than containers. */
+  --radius-control: 4px;
+  --radius-container: 6px;
+
+  /* The one reveal in the product.
+     A result arriving is the only moment where motion carries meaning — it
+     tells you the thing under your eyes is new. 140ms and two pixels: enough
+     to register, too short to wait for. Anything longer starts to feel like a
+     transition you are watching rather than a page that responded. */
+  --animate-rise: rise 140ms ease-out;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+[data-theme="dark"] {
+  --color-canvas: #09090b;
+  --color-surface: #111113;
+  --color-sunken: #18181b;
+
+  --color-line: #27272a;
+  --color-line-strong: #3f3f46;
+
+  --color-ink: #fafafa;
+  --color-ink-muted: #a1a1aa;
+  --color-ink-subtle: #8b8b93;
+
+  /* Lightened so the accent keeps its contrast against a dark canvas rather
+     than sinking into it. */
+  --color-accent: #6690f0;
+  --color-accent-hover: #82a5f4;
+  --color-accent-ink: #0b1020;
+  --color-accent-soft: #16203a;
+
+  --color-positive: #4ade80;
+  --color-positive-soft: #0c2016;
+  --color-caution: #fbbf24;
+  --color-caution-soft: #241a06;
+  --color-critical: #f87171;
+  --color-critical-soft: #2a1113;
 }
 
 html,
 body,
 #root {
   height: 100%;
+}
+
+body {
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+/* Colour-only transition, so switching theme does not appear to redraw the
+   page. Scoped to the properties that actually change. */
+:root {
+  --theme-transition: background-color 150ms ease-out, border-color 150ms ease-out,
+    color 150ms ease-out;
+}
+
+/* Motion is opt-out, always. Anything added later must respect this block. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

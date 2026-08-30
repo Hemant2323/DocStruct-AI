@@ -8,6 +8,29 @@
       name="description"
       content="AI-powered document intelligence and structuring platform"
     />
+    <script>
+      // Runs before paint so the theme is correct on first frame rather than
+      // corrected a moment later. Deliberately duplicates a few lines of
+      // src/lib/theme.ts: that module cannot load this early, and a flash of
+      // the wrong theme on every page load is worse than this small overlap.
+      // Kept in sync by the storage key and attribute name, which are the only
+      // contract between the two.
+      (function () {
+        try {
+          var stored = localStorage.getItem("docstruct.theme");
+          var theme =
+            stored === "light" || stored === "dark"
+              ? stored
+              : window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light";
+          document.documentElement.setAttribute("data-theme", theme);
+          document.documentElement.style.colorScheme = theme;
+        } catch (error) {
+          document.documentElement.setAttribute("data-theme", "light");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

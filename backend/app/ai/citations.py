@@ -125,6 +125,33 @@ def verify_quote(
     return None
 
 
+def resolve_source(context_block: ContextBlock, blocks_by_id: dict[UUID, ContentBlock]) -> Citation:
+    """Build a citation directly from a context block already known to be a source.
+
+    Used by retrieval-grounded answers (Milestone 4.4): unlike ``resolve_citations`` and
+    ``verify_quote``, no model output is involved here. Retrieval already decided this
+    chunk was relevant enough to send, so its provenance is resolved unconditionally
+    rather than depending on the model reporting a citation span — which providers
+    without native citation support (see ``GeminiProvider``, ``NVIDIAProvider``) never do.
+
+    Args:
+        context_block: One block that was sent to the model.
+        blocks_by_id: Content blocks keyed by id, for reading provenance.
+
+    Returns:
+        A citation for this block. ``provenance`` is ``None`` only if the block's own
+        content blocks could not be found — the same honest fallback ``resolve_citations``
+        and ``verify_quote`` use.
+    """
+    provenance_source = _first_block_with_provenance(context_block, blocks_by_id)
+    return Citation(
+        quoted_text=context_block.text,
+        provenance=provenance_source.provenance if provenance_source else None,
+        chunk_id=context_block.chunk_id,
+        block_ids=context_block.block_ids,
+    )
+
+
 def _first_block_with_provenance(
     context_block: ContextBlock, blocks_by_id: dict[UUID, ContentBlock]
 ) -> ContentBlock | None:

@@ -128,6 +128,12 @@ class Settings(BaseSettings):
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     gemini_model: str = "gemini-2.5-flash"
 
+    #: Separate from `gemini_model`: that setting is for generation (GeminiProvider —
+    #: /summary, /explanation, /structure); this one is for embeddings (GeminiEmbedder —
+    #: /ask's retrieval). A chat model name is not a valid embedding model, so the two
+    #: must never share one setting. Defaults to GeminiEmbedder's own default model.
+    gemini_embedding_model: str = "gemini-embedding-2-preview"
+
     #: Ceiling on the model's reply. Summaries and explanations are short; this is
     #: sized for a long explanation, not for the document being echoed back.
     ai_max_output_tokens: int = Field(default=8_000, ge=256, le=64_000)

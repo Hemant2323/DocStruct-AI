@@ -110,7 +110,16 @@ class Insight:
         document_id: The document analysed.
         kind: Summary, explanation, or extraction.
         content: The prose result. Empty for extractions, which use ``fields``.
-        fields: Extracted facts. Empty for prose results.
+        fields: Extracted facts, for a *single* structured result. Empty for prose
+            results and for multi-record results, which use ``records`` instead.
+        records: Multi-record structured results (Milestone 4) — one tuple of
+            ``ExtractedField`` per matching entity a document contains (e.g. one per
+            transaction in a payment report), rather than the single row ``fields``
+            represents. Empty for every other kind of result. Deliberately a sibling of
+            ``fields``, not a replacement: the two are never populated on the same
+            ``Insight`` today, and keeping them separate means nothing that already reads
+            ``fields`` (summary, explanation, extraction) needs to change to account for
+            a shape it will never receive.
         citations: Sources supporting the result.
         context_mode: Whether the whole document or a reduced context was used.
         model: Which model produced it, recorded so a result can be traced to it.
@@ -126,6 +135,7 @@ class Insight:
     kind: InsightKind
     content: str = ""
     fields: tuple[ExtractedField, ...] = ()
+    records: tuple[tuple[ExtractedField, ...], ...] = ()
     citations: tuple[Citation, ...] = ()
     context_mode: ContextMode = ContextMode.FULL
     model: str = ""

@@ -49,8 +49,15 @@ class AIResultRecord(Base):
     # Prose for summaries and explanations; empty for extractions.
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
-    # Extracted fields, for extraction results.
+    # Extracted fields, for a single-record extraction result.
     fields: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+
+    # Multi-record structured results (Milestone 4): one list of field-dicts per matching
+    # record a document contains (e.g. one per transaction), rather than the single row
+    # `fields` holds. A sibling of `fields`, not a replacement — populated only for
+    # multi-record structure results; every other kind leaves this an empty list, exactly
+    # as it leaves `fields` empty today.
+    records: Mapped[list[list[dict[str, Any]]]] = mapped_column(JSON, nullable=False, default=list)
 
     # Resolved citations: quoted text plus the provenance we looked up ourselves.
     citations: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)

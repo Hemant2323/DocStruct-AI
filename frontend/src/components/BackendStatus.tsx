@@ -1,51 +1,57 @@
 /**
- * Live backend connectivity indicator.
+ * Live backend connectivity — shown only when there is something wrong.
  *
- * This is the Milestone 1 proof that the frontend and backend actually talk to each
- * other: it calls the real health and readiness endpoints and reports what came back,
- * including failures.
+ * The probes are unchanged: both real endpoints, called on mount, with failures
+ * reported rather than swallowed. What changed is that a healthy result now
+ * renders nothing. "Backend connected" is a fact about our infrastructure, and
+ * a person using the product has no decision that depends on it; a permanent
+ * green light saying the software is working is the sort of thing an operator
+ * needs and a user reads as clutter. The app working *is* the indicator.
+ *
+ * A failure is still not collapsed, and deliberately so. If the API is
+ * unreachable then nothing else on the page will work, and the user is entitled
+ * to know that before they blame their own file. What the banner no longer
+ * carries is the internal error code and the shell command to start the server
+ * — both are for whoever runs the backend, and both are still in the console
+ * and the API response for them.
  */
 
 import { useCallback, useEffect, useState } from "react";
 
 import { ApiError } from "@/api/client";
 import { getHealth, getReadiness } from "@/api/health";
-import type { HealthResponse, ReadinessResponse } from "@/types/api";
+import { StatusDot } from "@/components/ui/StatusDot";
+import type { ReadinessResponse } from "@/types/api";
 
 type ConnectionState =
   | { kind: "loading" }
-  | { kind: "connected"; health: HealthResponse; readiness: ReadinessResponse }
-  | { kind: "error"; message: string; code: string; requestId: string | null };
+  | { kind: "connected"; readiness: ReadinessResponse }
+  | { kind: "error" };
 
-export function BackendStatus(): React.JSX.Element {
+export function BackendStatus(): React.JSX.Element | null {
   const [state, setState] = useState<ConnectionState>({ kind: "loading" });
 
   const check = useCallback(async (): Promise<void> => {
     setState({ kind: "loading" });
     try {
-      // Both probes are independent, so run them concurrently.
-      const [health, readiness] = await Promise.all([
-        getHealth(),
-        getReadiness(),
-      ]);
-      setState({ kind: "connected", health, readiness });
+      // Both probes are independent, so run them concurrently. Health is still
+      // called — an app that reports "reachable" without having reached it is
+      // not a check — but its build metadata is no longer shown to anyone.
+      const [, readiness] = await Promise.all([getHealth(), getReadiness()]);
+      setState({ kind: "connected", readiness });
     } catch (error) {
-      // Surface the real reason instead of a generic "something went wrong".
-      if (error instanceof ApiError) {
-        setState({
-          kind: "error",
-          message: error.message,
-          code: error.code,
-          requestId: error.requestId,
-        });
-        return;
-      }
-      setState({
-        kind: "error",
-        message: error instanceof Error ? error.message : String(error),
-        code: "unexpected_error",
-        requestId: null,
-      });
+      // The reason goes to the console, not the sidebar. It is what whoever
+      // runs the backend needs and nothing a user can act on — but it is never
+      // swallowed, because a connection failure with no recorded cause is the
+      // hardest kind to diagnose later.
+      const detail =
+        error instanceof ApiError
+          ? `${error.code}${error.requestId === null ? "" : ` · ${error.requestId}`}: ${error.message}`
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      console.error(`Backend health check failed — ${detail}`);
+      setState({ kind: "error" });
     }
   }, []);
 
@@ -53,119 +59,41 @@ export function BackendStatus(): React.JSX.Element {
     void check();
   }, [check]);
 
+  const degraded =
+    state.kind === "connected" &&
+    Object.values(state.readiness.checks).some((healthy) => !healthy);
+
+  // Working, or not yet known: say nothing. A check that has not come back is
+  // not news either — announcing "contacting the API…" on every load made the
+  // first second of the app about the app.
+  if (state.kind === "loading" || (state.kind === "connected" && !degraded)) {
+    return null;
+  }
+
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-      <div className="mb-4 flex items-center justify-between gap-4">
-        <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-          Backend connection
-        </h2>
+    <section
+      aria-live="polite"
+      className="border-line motion-safe:animate-rise border-t px-3 py-2.5 text-xs"
+    >
+      <p className="flex items-center gap-2">
+        <StatusDot tone={state.kind === "error" ? "critical" : "caution"} />
+        <span className="text-ink font-medium">
+          {state.kind === "error" ? "Can’t reach the server" : "Some features are down"}
+        </span>
         <button
           type="button"
           onClick={() => void check()}
-          disabled={state.kind === "loading"}
-          className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700"
+          className="text-ink-subtle hover:text-ink focus-visible:outline-accent rounded-control ml-auto shrink-0 transition-colors duration-100 focus-visible:outline-2 focus-visible:outline-offset-1"
         >
-          {state.kind === "loading" ? "Checking…" : "Re-check"}
+          Try again
         </button>
-      </div>
+      </p>
 
-      {state.kind === "loading" && (
-        <p className="text-sm text-slate-500 dark:text-slate-400">
-          Contacting the API…
-        </p>
-      )}
-
-      {state.kind === "error" && (
-        <div className="rounded-md border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950">
-          <p className="flex items-center gap-2 font-medium text-red-800 dark:text-red-200">
-            <span
-              aria-hidden="true"
-              className="inline-block h-2.5 w-2.5 rounded-full bg-red-500"
-            />
-            Not connected
-          </p>
-          <p className="mt-2 text-sm text-red-700 dark:text-red-300">
-            {state.message}
-          </p>
-          <p className="mt-2 font-mono text-xs text-red-600 dark:text-red-400">
-            {state.code}
-            {state.requestId !== null && <> · {state.requestId}</>}
-          </p>
-          <p className="mt-3 text-sm text-red-700 dark:text-red-300">
-            Start the backend with{" "}
-            <code className="rounded bg-red-100 px-1 py-0.5 font-mono text-xs dark:bg-red-900">
-              uvicorn app.main:app --reload
-            </code>{" "}
-            from the <code className="font-mono text-xs">backend/</code>{" "}
-            directory.
-          </p>
-        </div>
-      )}
-
-      {state.kind === "connected" && (
-        <div className="space-y-4">
-          <p className="flex items-center gap-2 font-medium text-emerald-700 dark:text-emerald-300">
-            <span
-              aria-hidden="true"
-              className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-500"
-            />
-            Connected
-          </p>
-
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
-            <Field label="Application" value={state.health.app} />
-            <Field label="Version" value={state.health.version} />
-            <Field label="Environment" value={state.health.environment} />
-          </dl>
-
-          <div>
-            <h3 className="mb-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-              Dependency checks
-            </h3>
-            <ul className="space-y-1">
-              {Object.entries(state.readiness.checks).map(([name, healthy]) => (
-                <li key={name} className="flex items-center gap-2 text-sm">
-                  <span
-                    aria-hidden="true"
-                    className={`inline-block h-2 w-2 rounded-full ${
-                      healthy ? "bg-emerald-500" : "bg-red-500"
-                    }`}
-                  />
-                  <span className="text-slate-700 dark:text-slate-300">
-                    {name}
-                  </span>
-                  <span
-                    className={
-                      healthy
-                        ? "text-emerald-700 dark:text-emerald-400"
-                        : "text-red-700 dark:text-red-400"
-                    }
-                  >
-                    {healthy ? "healthy" : "unavailable"}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      )}
+      <p className="text-ink-muted mt-1.5 leading-relaxed">
+        {state.kind === "error"
+          ? "Uploads and AI features won’t work until the connection is back."
+          : "Part of the service is unavailable, so some features may fail."}
+      </p>
     </section>
-  );
-}
-
-function Field({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}): React.JSX.Element {
-  return (
-    <div>
-      <dt className="text-xs text-slate-500 dark:text-slate-400">{label}</dt>
-      <dd className="font-medium text-slate-900 dark:text-slate-100">
-        {value}
-      </dd>
-    </div>
   );
 }

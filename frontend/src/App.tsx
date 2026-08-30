@@ -1,71 +1,55 @@
 /**
- * Application shell.
+ * Routes.
  *
- * One page: upload, the document list with live status, and — for whichever document is
- * selected — its AI analysis and its extracted content. Routing arrives in Milestone 5,
- * when there is more than one screen to route between.
+ * A document's workspace is a URL — `/d/{id}/{tab}` — so it can be linked,
+ * bookmarked, refreshed and walked with the back button. Everything renders
+ * inside one layout route, which keeps the library mounted across navigation.
+ *
+ * Two redirects rather than error pages: `/d/{id}` picks the default tab, and
+ * anything unrecognised returns to the library. Both replace rather than push,
+ * so Back never lands on a URL that immediately redirects again.
  */
 
-import { useCallback, useState } from "react";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
-import { BackendStatus } from "@/components/BackendStatus";
-import { DocumentContent } from "@/components/DocumentContent";
-import { DocumentInsights } from "@/components/DocumentInsights";
-import { DocumentList } from "@/components/DocumentList";
-import { DocumentUpload } from "@/components/DocumentUpload";
-import type { DocumentSummary } from "@/types/api";
+import { DEFAULT_TAB } from "@/lib/workspaceTabs";
+import { DocumentWorkspace } from "@/routes/DocumentWorkspace";
+import { ShellLayout } from "@/routes/ShellLayout";
 
 export default function App(): React.JSX.Element {
-  // Bumped after each upload so the list refreshes immediately rather than waiting for
-  // its next poll.
-  const [refreshToken, setRefreshToken] = useState(0);
-  const [selected, setSelected] = useState<DocumentSummary | null>(null);
-
-  const handleUploaded = useCallback(() => {
-    setRefreshToken((token) => token + 1);
-  }, []);
-
   return (
-    <div className="min-h-full bg-slate-50 dark:bg-slate-900">
-      <header className="border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800">
-        <div className="mx-auto max-w-4xl px-6 py-6">
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
-            DocStruct AI
-          </h1>
-          <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-            AI-powered document intelligence and structuring platform
-          </p>
-        </div>
-      </header>
+    <BrowserRouter>
+      <Routes>
+        <Route element={<ShellLayout />}>
+          <Route index element={<EmptyWorkspace />} />
+          <Route path="d/:documentId" element={<Navigate to={DEFAULT_TAB} replace />} />
+          <Route path="d/:documentId/:tab" element={<DocumentWorkspace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  );
+}
 
-      <main className="mx-auto max-w-4xl space-y-6 px-6 py-8">
-        <BackendStatus />
-        <DocumentUpload onUploaded={handleUploaded} />
-        <DocumentList
-          refreshToken={refreshToken}
-          selectedId={selected?.id ?? null}
-          onSelect={setSelected}
-        />
-
-        {selected !== null && (
-          <>
-            <DocumentInsights
-              documentId={selected.id}
-              filename={selected.original_filename}
-            />
-            <DocumentContent
-              documentId={selected.id}
-              filename={selected.original_filename}
-              onClose={() => setSelected(null)}
-            />
-          </>
-        )}
-
-        <footer className="pt-2 text-center text-xs text-slate-500 dark:text-slate-500">
-          Milestone 3 — AI understanding. Conversational question answering arrives in a
-          later milestone.
-        </footer>
-      </main>
+/**
+ * Shown when no document is open.
+ *
+ * States what to do next rather than decorating the space. On a small screen
+ * the library is behind the drawer, so the wording has to name that.
+ */
+function EmptyWorkspace(): React.JSX.Element {
+  return (
+    <div className="flex h-full items-center justify-center px-6 py-16">
+      <div className="max-w-sm text-center">
+        <p className="text-ink text-sm font-medium">No document open</p>
+        <p className="text-ink-muted mt-1 text-sm">
+          Choose a document from the library to summarize it, ask questions about it, or
+          turn it into structured data.
+        </p>
+        <p className="text-ink-subtle mt-3 text-xs md:hidden">
+          Open the library with the menu button above.
+        </p>
+      </div>
     </div>
   );
 }

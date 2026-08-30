@@ -166,3 +166,117 @@ export async function apiRequest<T>(
 
   return body as T;
 }
+
+/** A binary file returned by an API call, e.g. `/structure/export`. */
+export interface DownloadedFile {
+  blob: Blob;
+  /** The filename the server suggested via `Content-Disposition`. */
+  filename: string;
+}
+
+/**
+ * Pulls the filename out of a `Content-Disposition` header.
+ *
+ * The backend emits both RFC 6266 parameters: `filename` holding an ASCII
+ * approximation, and `filename*` holding the real name percent-encoded as UTF-8.
+ * `filename*` is preferred, because the plain one is a transliteration — a
+ * report titled in Devanagari would otherwise arrive under a name that has lost
+ * its own alphabet. The ASCII form remains the fallback, as it is all an older
+ * server would send.
+ */
+function filenameFromContentDisposition(header: string | null): string | null {
+  if (header === null) return null;
+
+  const extended = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (extended?.[1] !== undefined) {
+    try {
+      return decodeURIComponent(extended[1]);
+    } catch {
+      // A malformed percent-sequence is a reason to fall back, not to fail the
+      // download of a file the server built correctly.
+    }
+  }
+
+  const plain = /filename="?([^";]+)"?/.exec(header);
+  return plain?.[1] ?? null;
+}
+
+/**
+ * Perform an API request whose successful response is a binary file rather than JSON —
+ * e.g. `/structure/export`, which returns CSV/XLSX/JSON as a downloadable attachment.
+ *
+ * Kept separate from {@link apiRequest} rather than folded into it: that function always
+ * parses the body as JSON, on both the success and error paths, which cannot work for a
+ * binary body. Error responses are still JSON (the API's error envelope), so this mirrors
+ * {@link apiRequest}'s error handling and only diverges on the success path.
+ *
+ * @param path Path below the API prefix, e.g. `"/documents/{id}/structure/export"`.
+ * @param init Standard `fetch` options.
+ * @throws {ApiError} On any failure.
+ */
+export async function apiRequestBlob(
+  path: string,
+  init: RequestInit = {},
+): Promise<DownloadedFile> {
+  const url = `${API_BASE_URL}${API_PREFIX}${path}`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: {
+        Accept: "application/json, application/octet-stream",
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...init.headers,
+      },
+    });
+  } catch (cause) {
+    throw new ApiError(
+      0,
+      "network_error",
+      "Could not reach the DocStruct AI backend. Is it running?",
+      { cause: String(cause) },
+    );
+  }
+
+  const headerRequestId = response.headers.get("X-Request-ID");
+
+  if (!response.ok) {
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new ApiError(
+        response.status,
+        "invalid_response",
+        `Request failed with status ${response.status}`,
+        {},
+        headerRequestId,
+      );
+    }
+
+    if (isApiErrorBody(body)) {
+      throw new ApiError(
+        response.status,
+        body.error.code,
+        body.error.message,
+        body.error.details ?? {},
+        body.error.request_id ?? headerRequestId,
+      );
+    }
+    throw new ApiError(
+      response.status,
+      "unknown_error",
+      `Request failed with status ${response.status}`,
+      {},
+      headerRequestId,
+    );
+  }
+
+  const blob = await response.blob();
+  const filename = filenameFromContentDisposition(
+    response.headers.get("Content-Disposition"),
+  ) ?? "download";
+
+  return { blob, filename };
+}

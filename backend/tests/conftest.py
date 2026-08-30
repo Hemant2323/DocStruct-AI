@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_llm_provider, reset_llm_provider
+from app.api.deps import get_llm_provider, get_retriever, reset_llm_provider
 from app.core.config import Settings, get_settings
 from app.core.database import dispose_engine, get_engine, get_session_factory
 from app.main import create_app
@@ -25,6 +25,7 @@ from app.repositories.document_repo import DocumentRepository
 from app.services.job_service import JobService
 from app.storage.local import LocalFileStorage
 from tests.fixtures.fake_provider import FakeLLMProvider
+from tests.fixtures.fake_retriever import FakeRetriever
 
 
 @pytest.fixture
@@ -33,6 +34,12 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
 
     Environment variables are set rather than a ``Settings`` object constructed directly,
     so this exercises the same configuration-loading path the real application uses.
+
+    Every AI-related variable is pinned explicitly, not just ``ANTHROPIC_API_KEY``: without
+    that, a value present only in the developer's own ``backend/.env`` (a non-default
+    ``AI_PROVIDER``, a real key for another provider, a non-default ``ANTHROPIC_MODEL``)
+    leaks into tests that assume the code's plain defaults, making them pass or fail
+    depending on whose machine they run on rather than on the code itself.
     """
     db_path = tmp_path / "test.db"
     storage_path = tmp_path / "storage"
@@ -42,7 +49,12 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setenv("STORAGE_DIR", str(storage_path))
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
+    monkeypatch.setenv("AI_PROVIDER", "claude")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("NVIDIA_API_KEY", "")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-opus-5")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "")
 
     get_settings.cache_clear()
     return get_settings()
@@ -125,6 +137,30 @@ async def ai_client(ai_app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
     transport = ASGITransport(app=ai_app)
     async with (
         ai_app.router.lifespan_context(ai_app),
+        AsyncClient(transport=transport, base_url="http://testserver") as http_client,
+    ):
+        yield http_client
+
+
+@pytest.fixture
+def fake_retriever() -> FakeRetriever:
+    """A stand-in retriever. No test here computes real embeddings or similarity."""
+    return FakeRetriever()
+
+
+@pytest.fixture
+def qa_app(ai_app: FastAPI, fake_retriever: FakeRetriever) -> FastAPI:
+    """The application with both the language model and the retriever replaced by fakes."""
+    ai_app.dependency_overrides[get_retriever] = lambda: fake_retriever
+    return ai_app
+
+
+@pytest.fixture
+async def qa_client(qa_app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
+    """An HTTP client whose AI and retrieval calls both go to fakes."""
+    transport = ASGITransport(app=qa_app)
+    async with (
+        qa_app.router.lifespan_context(qa_app),
         AsyncClient(transport=transport, base_url="http://testserver") as http_client,
     ):
         yield http_client

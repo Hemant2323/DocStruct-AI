@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Path, status
+from fastapi import APIRouter, Body, Path, Query, Response, status
 
 from app.ai.optimization import should_offer_optimization
-from app.api.deps import AnalysisServiceDep, OwnerIdDep, SettingsDep
+from app.api.deps import AnalysisServiceDep, ExportServiceDep, OwnerIdDep, QAServiceDep, SettingsDep
 from app.api.responses import error_responses
 from app.api.schemas.analysis import (
     AIStatusResponse,
@@ -24,6 +24,11 @@ from app.api.schemas.analysis import (
     InsightListResponse,
     InsightResponse,
 )
+from app.api.schemas.export import StructureExportRequest
+from app.api.schemas.qa import AskRequest, AskResponse
+from app.api.schemas.structure import StructureRequest, StructureResponse
+from app.core.security import content_disposition_attachment
+from app.services.export_service import ExportFormat
 
 router = APIRouter(prefix="/documents", tags=["analysis"])
 
@@ -137,6 +142,91 @@ async def extract_from_document(
     return InsightResponse.from_domain(insight)
 
 
+@router.post(
+    "/{document_id}/structure",
+    response_model=StructureResponse,
+    summary="Convert a document into a structured, multi-record table",
+    response_description="One record per matching entity in the document, with sources.",
+    responses=error_responses(*_ANALYSIS_ERRORS),
+)
+async def structure_document(
+    service: AnalysisServiceDep,
+    owner_id: OwnerIdDep,
+    document_id: UUID = Path(description="The document to extract structured data from."),
+    request: StructureRequest = Body(...),
+) -> StructureResponse:
+    """Turn a document into a structured table — one record per matching entity.
+
+    A payment report listing twenty transactions returns twenty records, not just the
+    first: each record holds the requested fields for one transaction. Say what you want
+    in either of two ways, but not both:
+
+    - **`schema`** — the exact fields, as a flat mapping of field name to type (`string`,
+      `number`, `integer`, `boolean`, or `date`). Field names must be lowercase and
+      contain only letters, numbers and underscores; at most 40 fields at once.
+    - **`instruction`** — a plain-language description of the table you want ("a payment
+      report with one row per transaction, including account holder, bank and amount").
+      The fields are worked out from it; the schema arrived at is returned as
+      `schema_used`, so you can see exactly what was extracted and reuse it.
+
+    Every field is grounded exactly like `/extraction`: the model's quote is verified
+    against the stored document text before any source location is shown. A field a given
+    record does not state is left out of that record rather than guessed at.
+
+    The result is cached per exact schema — the same fields, in any order, return the
+    cached result unless `refresh` is set. An `instruction` request still costs one AI
+    call to work out the schema, even when the result for that schema is already cached.
+    """
+    result = await service.structure(
+        document_id,
+        owner_id=owner_id,
+        schema=request.requested_schema,
+        instruction=request.instruction,
+        refresh=request.refresh,
+    )
+    return StructureResponse.from_domain(result)
+
+
+@router.post(
+    "/{document_id}/structure/export",
+    summary="Export a structure result as JSON, CSV, or XLSX",
+    response_description="A downloadable file in the requested format.",
+    responses=error_responses(*_ANALYSIS_ERRORS),
+)
+async def export_structure(
+    service: ExportServiceDep,
+    owner_id: OwnerIdDep,
+    document_id: UUID = Path(description="The document whose structured result to export."),
+    export_format: ExportFormat = Query(
+        alias="format", description="The file format to export: 'json', 'csv', or 'xlsx'."
+    ),
+    request: StructureExportRequest = Body(...),
+) -> Response:
+    """Export an already-generated `/structure` result as a downloadable file.
+
+    This never calls the AI model — it looks up the exact cached result for the schema
+    you supply (the same one you used with `/structure`) and reports 404 if no such
+    result has been generated yet, rather than generating one on the spot. Field order in
+    the schema does not matter; the field names and types must match exactly.
+
+    JSON includes the extracted fields with their values and verified sources. CSV and
+    XLSX contain the same data as one row per field, with any value that could be
+    misread as a spreadsheet formula (starting with `=`, `+`, `-`, or `@`) safely escaped.
+    No internal identifiers (chunk IDs, block IDs, database IDs) are included in any format.
+    """
+    exported = await service.export_structure(
+        document_id,
+        owner_id=owner_id,
+        schema=request.requested_schema,
+        export_format=export_format,
+    )
+    return Response(
+        content=exported.content,
+        media_type=exported.media_type,
+        headers={"Content-Disposition": content_disposition_attachment(exported.filename)},
+    )
+
+
 @router.get(
     "/{document_id}/insights",
     response_model=InsightListResponse,
@@ -184,6 +274,35 @@ async def context_preview(
             stats.estimated_tokens, settings.ai_optimization_min_tokens
         ),
     )
+
+
+@router.post(
+    "/{document_id}/ask",
+    response_model=AskResponse,
+    summary="Ask a question about a document",
+    response_description="An answer grounded in the document, with its sources.",
+    responses=error_responses(*_ANALYSIS_ERRORS),
+)
+async def ask_document(
+    service: QAServiceDep,
+    owner_id: OwnerIdDep,
+    document_id: UUID = Path(description="The document to ask about."),
+    request: AskRequest = Body(...),
+) -> AskResponse:
+    """Ask a question about a document and get a grounded answer.
+
+    The answer is based only on the parts of the document that retrieval judged most
+    relevant to the question — never the model's own outside knowledge. If the retrieved
+    content does not contain enough to answer, the model says so rather than guessing.
+
+    Each answer is generated fresh. Unlike summaries and explanations, questions are not
+    cached: two different questions about the same document have nothing in common to
+    cache against, and this endpoint does not yet support multi-turn conversation.
+    """
+    result = await service.ask(
+        document_id, request.question, owner_id=owner_id, top_k=request.top_k
+    )
+    return AskResponse.from_domain(result)
 
 
 # Separate router: this one is about the server, not about a document.

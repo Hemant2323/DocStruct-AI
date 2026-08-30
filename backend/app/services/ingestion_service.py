@@ -4,14 +4,19 @@ Runs after the upload response has already been sent:
 
     PENDING -> PROCESSING -> parse -> normalize -> chunk -> persist -> READY
                                  └── any failure ──────────────────-> FAILED + reason
+                                                              └── embed chunks (best-effort)
 
-Two things here are easy to get wrong and are handled deliberately:
+Three things here are easy to get wrong and are handled deliberately:
 
 * **The background task creates its own database session.** The request-scoped session is
   already committed and closed by the time this runs, so reusing it would fail at
   runtime — and a mocked unit test would never notice.
 * **Parsing runs in a worker thread.** It is CPU-bound; running it on the event loop
   would stall every other request for the duration.
+* **Embedding generation is best-effort, after the document is already READY.** It powers
+  `/ask` (retrieval) only, not the core ingestion guarantee — a document with no AI
+  provider configured, or a transient embedding failure, must still ingest successfully.
+  A failure here is logged and never changes the document's terminal state.
 """
 
 from __future__ import annotations
@@ -22,10 +27,14 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.ai.embeddings.base import Embedder
 from app.core.config import Settings
 from app.core.exceptions import (
+    AIConfigurationError,
+    AIUnavailableError,
     DocStructError,
     EmptyDocumentError,
+    InvalidModelResponseError,
     NotFoundError,
     ProcessingError,
 )
@@ -37,8 +46,10 @@ from app.ingestion.registry import get_parser
 from app.models.domain.content import ParsedDocument
 from app.models.domain.document import Document, ProcessingStatus
 from app.repositories.block_repo import ContentBlockRepository
+from app.repositories.chunk_embedding_repo import ChunkEmbeddingRepository
 from app.repositories.chunk_repo import ChunkRepository
 from app.repositories.document_repo import DocumentRepository
+from app.retrieval.hashing import compute_content_hash
 from app.storage.base import FileStorage
 
 logger = get_logger(__name__)
@@ -76,6 +87,10 @@ class IngestionService:
             request-scoped session to borrow.
         storage: Where the uploaded bytes live.
         settings: Limits and chunking configuration.
+        embedder: Used to compute chunk embeddings after a document is ready, for `/ask`.
+            Optional — and checked for `is_configured` before use — so ingestion keeps
+            working exactly as before on a deployment with no AI provider configured,
+            and so existing tests that construct this service without one are unaffected.
     """
 
     def __init__(
@@ -83,11 +98,13 @@ class IngestionService:
         session_factory: async_sessionmaker[AsyncSession],
         storage: FileStorage,
         settings: Settings,
+        embedder: Embedder | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._storage = storage
         self._settings = settings
         self._limits = ParserLimits.from_settings(settings)
+        self._embedder = embedder
 
     async def process_document(self, document_id: UUID, *, owner_id: str) -> IngestionResult:
         """Run the full pipeline for one document.
@@ -117,6 +134,20 @@ class IngestionService:
                 result.block_count,
                 result.chunk_count,
             )
+
+            # Best-effort, after the document is already READY: embeddings power `/ask`
+            # only, never the core ingestion guarantee. Anything that goes wrong here —
+            # no provider configured, a transient API failure, a database hiccup — must
+            # be logged, never allowed to undo a successful ingestion or leave the
+            # document in a worse state than "ready, but not yet searchable."
+            try:
+                await self._generate_embeddings(document_id)
+            except Exception:
+                logger.exception(
+                    "Embedding generation failed after successful ingestion document_id=%s",
+                    document_id,
+                )
+
             return result
 
         except DocStructError as exc:
@@ -134,8 +165,11 @@ class IngestionService:
             raise
 
         except Exception as exc:
-            # The one place a bare `except Exception` is correct: the alternative is a
-            # document stuck in PROCESSING forever. Logged in full, never swallowed.
+            # A bare `except Exception` is correct here: the alternative is a document
+            # stuck in PROCESSING forever. Logged in full, never swallowed. (The other
+            # broad catch in this file, around `_generate_embeddings` above, guards a
+            # different and unrelated risk — an optional, best-effort step corrupting an
+            # already-successful ingestion's terminal state.)
             await self._fail(
                 document_id,
                 owner_id,
@@ -203,6 +237,75 @@ class IngestionService:
             chunk_count=len(chunks),
             page_count=parsed.stats.page_count,
             warnings=warnings,
+        )
+
+    async def _generate_embeddings(self, document_id: UUID) -> None:
+        """Compute and persist an embedding for each of a document's chunks.
+
+        No ``owner_id``: chunks and embeddings are addressed by ``document_id`` alone at
+        the repository level (only ``DocumentRepository`` is owner-scoped) — by the time
+        this runs, the document has already been loaded once under the correct owner.
+
+        Reuses exactly the mechanism M4.3 built for this: ``Embedder.embed()`` for the
+        vector, ``compute_content_hash()`` for the staleness hash
+        ``ChunkEmbeddingRepository`` compares against later, and
+        ``ChunkEmbeddingRepository.replace_for_chunk()`` to store it. Nothing about how a
+        chunk becomes an embedding is invented here — this is the missing call site, not
+        new mechanism.
+
+        One chunk's embedding failing does not stop the rest: a partially-embedded
+        document can still be searched on whatever succeeded, which is strictly better
+        than none. The caller wraps this whole method in its own broad catch, so a
+        deeper failure (the session itself, a database error) is contained too.
+        """
+        if self._embedder is None or not self._embedder.is_configured:
+            logger.info(
+                "Skipping embedding generation (no embedder configured) document_id=%s",
+                document_id,
+            )
+            return
+
+        async with self._session_factory() as session:
+            chunk_repository = ChunkRepository(session)
+            embedding_repository = ChunkEmbeddingRepository(session)
+
+            chunks = await chunk_repository.list_for_document(document_id)
+            embedded = 0
+
+            for chunk in chunks:
+                try:
+                    result = await self._embedder.embed(chunk.text)
+                except (
+                    AIConfigurationError,
+                    AIUnavailableError,
+                    InvalidModelResponseError,
+                ) as exc:
+                    logger.warning(
+                        "Could not embed chunk chunk_id=%s document_id=%s reason=%s",
+                        chunk.id,
+                        document_id,
+                        type(exc).__name__,
+                    )
+                    continue
+
+                await embedding_repository.replace_for_chunk(
+                    chunk_id=chunk.id,
+                    document_id=document_id,
+                    model=self._embedder.model_name,
+                    values=result.values,
+                    content_hash=compute_content_hash(chunk.text),
+                    token_count=result.token_count,
+                )
+                embedded += 1
+
+            await session.commit()
+
+        log = logger.info if embedded == len(chunks) else logger.warning
+        log(
+            "Embedding generation finished document_id=%s embedded=%d total=%d",
+            document_id,
+            embedded,
+            len(chunks),
         )
 
     async def _load_document(self, document_id: UUID, owner_id: str) -> Document:

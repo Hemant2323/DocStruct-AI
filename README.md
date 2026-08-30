@@ -65,6 +65,44 @@ The MVP delivers nine capabilities:
 | 8 | **Cite** | Every answer points back to its source location |
 | 9 | **Multi-document** | Ask a question spanning several documents at once |
 
+### Beyond the MVP: document conversion
+
+Built after the MVP capabilities above. Where **Structure** turns a document into a table
+of values, **Convert** builds a *new document* out of them: you describe the report you
+want in plain language, and the system reorganizes the source's own content into it —
+grouping, filtering and standardizing inconsistently written values along the way.
+
+```
+POST /api/documents/{id}/convert                              → build and store one
+GET  /api/documents/{id}/conversions                          → list past runs
+GET  /api/documents/{id}/conversions/{cid}                    → fetch one
+GET  /api/documents/{id}/conversions/{cid}/export?format=...  → md | docx | xlsx | json
+```
+
+```json
+POST /api/documents/{id}/convert
+{
+  "instruction": "Create a clean customer master report. Group customers by account type,
+                  standardize account types, put pending KYC issues in a separate section,
+                  and do not invent missing information.",
+  "refresh": false
+}
+```
+
+**Nothing is invented.** Every value in the result is either copied from the source or a
+*recorded* correction of something copied from it. The AI only decides how the document
+should be organized and which values look wrong; the document itself is assembled by
+ordinary Python, so the same source and the same decisions always produce the same file.
+
+Corrections are checked before they are applied — a date reformat must denote the same
+day, a spelling fix must stay recognisably the same name, a standardized value must come
+from a declared set. Anything that cannot be proven is **not applied**: the original value
+stays and the suggestion is listed beside it. Anything judged unsafe is refused and
+reported. Every result carries that full audit, in every format that can express it.
+
+Retrieval and download are database-only — fetching a conversion again never re-runs the
+AI, and never costs anything.
+
 **Explicitly out of scope for the MVP:** OCR and scanned documents, document comparison,
 financial analysis, knowledge graphs, agents, and advanced analytics. The architecture is
 designed to accommodate them later — see [Future features](#future-features).
