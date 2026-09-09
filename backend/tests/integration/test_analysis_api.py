@@ -596,6 +596,138 @@ class TestAIStatus:
         assert response_model(await client.get(f"{api_prefix}/ai/status")) == "claude-opus-5"
 
 
+class TestAIStatusFollowsTheActiveProvider:
+    """The endpoint must describe whichever provider is actually configured.
+
+    It used to read `settings.ai_configured` and `settings.anthropic_model`, both of
+    which are about Anthropic specifically. A server running `AI_PROVIDER=gemini` with a
+    Gemini key therefore reported `configured: false` and Anthropic's model name — and the
+    frontend, which disables every AI button on `configured: false`, presented a fully
+    working server as one with no AI at all.
+
+    No fake provider here on purpose. These tests go through the real
+    `deps._build_provider`, because provider *selection* is the thing that was broken;
+    overriding the provider would step over the bug.
+    """
+
+    @staticmethod
+    def _configure(monkeypatch: pytest.MonkeyPatch, **env: str) -> None:
+        """Point the process at a provider, the way a deployment's environment would."""
+        from app.core.config import get_settings
+
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        get_settings.cache_clear()
+
+    async def test_gemini_with_a_key_reports_configured(
+        self, app: FastAPI, api_prefix: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exact deployment case that was broken."""
+        self._configure(
+            monkeypatch,
+            AI_PROVIDER="gemini",
+            GEMINI_API_KEY="test-key-not-real",
+            GEMINI_MODEL="gemini-2.5-flash",
+        )
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as http_client:
+            response = await http_client.get(f"{api_prefix}/ai/status")
+
+        assert response.status_code == 200
+        assert response.json()["configured"] is True
+        assert response.json()["model"] == "gemini-2.5-flash"
+
+    async def test_gemini_without_a_key_reports_unconfigured(
+        self, app: FastAPI, api_prefix: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The fix must not turn the report into "always configured" — an unusable
+        server still has to say so, or the buttons stop being a warning at all."""
+        self._configure(monkeypatch, AI_PROVIDER="gemini", GEMINI_API_KEY="")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as http_client:
+            response = await http_client.get(f"{api_prefix}/ai/status")
+
+        assert response.json()["configured"] is False
+
+    async def test_an_anthropic_key_does_not_make_gemini_look_configured(
+        self, app: FastAPI, api_prefix: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The inverse of the original bug, and the reason it has its own test: reading
+        the wrong provider's settings can report a *false positive* just as easily as a
+        false negative. A key for a provider that is not in use configures nothing."""
+        self._configure(
+            monkeypatch,
+            AI_PROVIDER="gemini",
+            GEMINI_API_KEY="",
+            ANTHROPIC_API_KEY="sk-ant-not-a-real-key",
+        )
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as http_client:
+            response = await http_client.get(f"{api_prefix}/ai/status")
+
+        assert response.json()["configured"] is False
+        assert response.json()["model"] != "claude-opus-5"
+
+    async def test_the_key_never_leaves_the_server_on_the_gemini_path(
+        self, app: FastAPI, api_prefix: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guarantee the original endpoint carried, re-established on the new path."""
+        self._configure(monkeypatch, AI_PROVIDER="gemini", GEMINI_API_KEY="AIzaSySUPERSECRET123")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as http_client:
+            response = await http_client.get(f"{api_prefix}/ai/status")
+
+        assert "SUPERSECRET" not in response.text
+        assert "AIzaSy" not in response.text
+
+    async def test_the_response_shape_is_unchanged(
+        self, app: FastAPI, api_prefix: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backward compatibility: the frontend reads exactly these two fields."""
+        self._configure(monkeypatch, AI_PROVIDER="gemini", GEMINI_API_KEY="test-key-not-real")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as http_client:
+            response = await http_client.get(f"{api_prefix}/ai/status")
+
+        body = response.json()
+        assert set(body) == {"configured", "model"}
+        assert isinstance(body["configured"], bool)
+        assert isinstance(body["model"], str)
+
+    async def test_status_agrees_with_what_the_services_check(
+        self, app: FastAPI, api_prefix: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The property that makes this fix structural rather than cosmetic.
+
+        Services gate every call on `provider.is_configured`. Reporting the same value
+        means the endpoint and the requests it gates cannot disagree — which is exactly
+        what happened when one read settings and the other read the provider.
+        """
+        from app.api.deps import _build_provider
+        from app.core.config import get_settings
+
+        self._configure(monkeypatch, AI_PROVIDER="gemini", GEMINI_API_KEY="test-key-not-real")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as http_client:
+            response = await http_client.get(f"{api_prefix}/ai/status")
+
+        provider = _build_provider(get_settings())
+        assert response.json()["configured"] is provider.is_configured
+        assert response.json()["model"] == provider.model_name
+
+
 def response_model(response: Any) -> str:
     model: str = response.json()["model"]
     return model

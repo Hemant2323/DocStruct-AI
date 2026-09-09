@@ -14,7 +14,14 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Path, Query, Response, status
 
 from app.ai.optimization import should_offer_optimization
-from app.api.deps import AnalysisServiceDep, ExportServiceDep, OwnerIdDep, QAServiceDep, SettingsDep
+from app.api.deps import (
+    AnalysisServiceDep,
+    ExportServiceDep,
+    LLMProviderDep,
+    OwnerIdDep,
+    QAServiceDep,
+    SettingsDep,
+)
 from app.api.responses import error_responses
 from app.api.schemas.analysis import (
     AIStatusResponse,
@@ -315,13 +322,25 @@ status_router = APIRouter(tags=["analysis"])
     summary="Check whether AI features are available",
     response_description="Whether the server can make AI requests, and with which model.",
 )
-async def ai_status(settings: SettingsDep) -> AIStatusResponse:
+async def ai_status(provider: LLMProviderDep) -> AIStatusResponse:
     """Report whether AI features are configured on this server.
 
     Lets the interface disable the AI buttons with a clear explanation instead of letting
     a user click one and receive a failure.
 
+    **Asks the active provider, not the settings.** This used to read
+    ``settings.ai_configured`` and ``settings.anthropic_model``, both of which are about
+    Anthropic specifically — so a server running with ``AI_PROVIDER=gemini`` and a Gemini
+    key reported ``configured: false`` and Anthropic's model name. The frontend believed
+    it, and disabled every AI button on a server whose AI worked perfectly well.
+
+    The provider is the only thing that knows the answer, and it already had to know it:
+    ``is_configured`` is what every service checks before making a call, so reporting it
+    here means this endpoint and the requests it gates can no longer disagree. Which
+    provider gets built is still decided in one place (``deps._build_provider``), and
+    nothing here branches on a provider name.
+
     Only *whether* a key is present is reported. The key itself never leaves the server —
     it is not returned here in any form, not even partially.
     """
-    return AIStatusResponse(configured=settings.ai_configured, model=settings.anthropic_model)
+    return AIStatusResponse(configured=provider.is_configured, model=provider.model_name)
