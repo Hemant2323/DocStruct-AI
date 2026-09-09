@@ -296,6 +296,111 @@ class TestGeminiSettings:
         assert settings.gemini_model == "gemini-2.5-pro"
 
 
+class TestDatabaseUrlNormalization:
+    """A bare `postgresql://` URL is given the async driver it needs.
+
+    Everything reaches the database through SQLAlchemy's async engine, which requires the
+    driver in the URL. Managed providers hand out the plain form, which selects the
+    default *synchronous* driver and dies with `No module named 'psycopg2'` — naming a
+    package this project does not use and never will.
+    """
+
+    def test_a_plain_postgresql_url_gains_the_async_driver(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reported deployment case."""
+        monkeypatch.setenv("DATABASE_URL", "postgresql://user:pw@host:5432/db")
+
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+        assert settings.database_url == "postgresql+asyncpg://user:pw@host:5432/db"
+
+    def test_a_url_that_already_names_asyncpg_is_untouched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Byte-for-byte — normalising an already-correct URL must not rewrite it."""
+        url = "postgresql+asyncpg://user:pw@host:5432/db"
+        monkeypatch.setenv("DATABASE_URL", url)
+
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+        assert settings.database_url == url
+
+    def test_a_sqlite_url_is_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The development default must behave exactly as it did before."""
+        url = "sqlite+aiosqlite:///./test.db"
+        monkeypatch.setenv("DATABASE_URL", url)
+
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+        assert settings.database_url == url
+        assert settings.database_dialect == "sqlite"
+
+    def test_the_sqlite_default_is_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With nothing set at all, the zero-setup default still points at SQLite."""
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+        assert settings.database_url.startswith("sqlite+aiosqlite:///")
+        assert settings.database_dialect == "sqlite"
+
+    def test_an_explicitly_chosen_driver_is_respected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only the *bare* scheme is rewritten. Someone who named a driver meant it, and
+        silently swapping it for another would be a surprise rather than a convenience."""
+        url = "postgresql+psycopg://user:pw@host:5432/db"
+        monkeypatch.setenv("DATABASE_URL", url)
+
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+        assert settings.database_url == url
+
+    def test_everything_after_the_scheme_survives_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Credentials, port, database name and query parameters are the parts that make
+        the URL work at all, so the rewrite must touch the scheme and nothing else."""
+        monkeypatch.setenv(
+            "DATABASE_URL",
+            "postgresql://u%40name:p%3Aw@db.internal.example:5432/docstruct?sslmode=require",
+        )
+
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+        assert settings.database_url == (
+            "postgresql+asyncpg://u%40name:p%3Aw@db.internal.example:5432/docstruct?sslmode=require"
+        )
+
+    def test_the_normalised_url_is_one_the_async_engine_accepts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The end of the story, and the only assertion that proves the bug is fixed.
+
+        Creating an engine resolves the dialect and imports the driver, which is exactly
+        where the plain URL failed. No connection is opened, so this touches no network
+        and needs no database.
+        """
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        monkeypatch.setenv("DATABASE_URL", "postgresql://user:pw@host:5432/db")
+
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+        engine = create_async_engine(settings.database_url)
+
+        assert engine.dialect.driver == "asyncpg"
+
+    def test_the_dialect_reported_for_engine_options_is_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`database_dialect` picks the pool settings, so normalisation must not move a
+        PostgreSQL URL onto the SQLite branch (or the reverse)."""
+        monkeypatch.setenv("DATABASE_URL", "postgresql://user:pw@host:5432/db")
+
+        assert Settings(_env_file=None).database_dialect == "postgresql"  # type: ignore[call-arg]
+
+
 def test_no_secret_has_a_real_default() -> None:
     """A secret must never carry a usable default value baked into source."""
     settings = Settings(_env_file=None)  # type: ignore[call-arg]

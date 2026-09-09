@@ -219,6 +219,35 @@ class Settings(BaseSettings):
             raise ValueError("api_prefix must start with '/'")
         return value.rstrip("/")
 
+    @field_validator("database_url")
+    @classmethod
+    def _normalize_database_url(cls, value: str) -> str:
+        """Name the async driver on a PostgreSQL URL that does not name one.
+
+        Everything here talks to the database through SQLAlchemy's **async** engine, which
+        requires the driver to be part of the URL: ``postgresql+asyncpg://``. Managed
+        providers hand out the plain ``postgresql://`` form, which selects the default
+        synchronous driver and fails with ``No module named 'psycopg2'`` — an error that
+        names a package the project neither has nor wants, and says nothing about the
+        actual problem.
+
+        Normalising here rather than at the point of use is what makes it one fix instead
+        of two: the application engine and Alembic both read ``settings.database_url``
+        (``alembic/env.py`` copies it into ``sqlalchemy.url``), so a URL corrected in only
+        one of them would leave migrations failing against a database the app could reach.
+
+        Deliberately narrow. Only the bare ``postgresql`` scheme is rewritten:
+
+        * ``postgresql+asyncpg://`` already names a driver and is returned untouched;
+        * so is any other explicit choice such as ``postgresql+psycopg://`` — overriding
+          a driver someone named on purpose would be a surprise, not a convenience;
+        * ``sqlite+aiosqlite://`` and every other scheme pass through unchanged.
+        """
+        scheme, separator, rest = value.partition("://")
+        if separator and scheme == "postgresql":
+            return f"postgresql+asyncpg://{rest}"
+        return value
+
     @field_validator("anthropic_base_url")
     @classmethod
     def _validate_base_url(cls, value: str | None) -> str | None:
