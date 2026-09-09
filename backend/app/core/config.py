@@ -165,6 +165,44 @@ class Settings(BaseSettings):
     #: Share of the token budget an optimized context may use.
     ai_optimization_target_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
 
+    # --- Windowed conversion extraction --------------------------------------
+    #: Above this many estimated tokens of extracted content, a conversion extracts the
+    #: document in windows instead of one call. Below it, nothing changes — the request
+    #: takes the single-call path it always took.
+    #:
+    #: The number that matters is not the input context (Gemini's window is far larger
+    #: than this) but the *output* ceiling: one call must emit every record it finds, and
+    #: `ai_max_output_tokens` caps that reply regardless of how much was sent in. A
+    #: document big enough to hold more records than one reply can carry loses the rest,
+    #: which is what windowing exists to prevent.
+    #:
+    #: This is both the threshold for windowing at all and the *maximum* window size.
+    #: Windows below it are sized per document from measured record density and the
+    #: schema's field count — see `app.ai.windows.adaptive_window_tokens`, and
+    #: `scripts/benchmark_conversion.py` for what the two densities cost.
+    conversion_chunk_window_tokens: int = Field(default=40_000, ge=1_000, le=500_000)
+
+    #: Floor on an adaptively chosen window.
+    #:
+    #: The first window of a long document is planned at exactly this size: it is small
+    #: enough to be safe at any density, and the records it returns are what the rest of
+    #: the document is sized from. It is also the size every window falls back to when
+    #: that measurement is unavailable, so it has to be conservative rather than merely
+    #: small.
+    conversion_chunk_min_window_tokens: int = Field(default=2_000, ge=500, le=50_000)
+
+    #: How many window extractions may be in flight at once.
+    #:
+    #: Deliberately low. Gemini's free tier is measured in requests per minute, and the
+    #: provider's retry budget is per-request — so raising this multiplies into
+    #: `concurrency x retries` requests arriving during the same rate-limit window, which
+    #: is how a "faster" setting ends up slower and half-failed.
+    conversion_chunk_concurrency: int = Field(default=3, ge=1, le=16)
+
+    #: Kill switch. With this off, every conversion takes the single-call path however
+    #: large the document is — the behaviour that shipped before windowing existed.
+    conversion_chunking_enabled: bool = True
+
     @field_validator("log_level")
     @classmethod
     def _validate_log_level(cls, value: str) -> str:

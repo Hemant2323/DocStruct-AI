@@ -24,6 +24,7 @@ from app.core.exceptions import (
     AIConfigurationError,
     AIUnavailableError,
     InvalidModelResponseError,
+    OutputTruncatedError,
 )
 from app.models.domain.insight import ContextBlock
 
@@ -636,6 +637,154 @@ class TestErrorsAreSafeAndTyped:
             await provider.generate(
                 system="s", instruction="i", context_blocks=_blocks(), document_title="d.pdf"
             )
+
+
+class TestOutputTokenCeiling:
+    """A reply cut short by `ai_max_output_tokens`, which is not a safety stop.
+
+    Gemini reports it as ``finishReason: "MAX_TOKENS"`` on an otherwise successful
+    response, so without an explicit check it looks like a normal completion whose JSON
+    happens to be malformed. That distinction matters: it is the failure a long document
+    actually hits, and reporting it as a schema mismatch sends whoever reads the log
+    hunting for a bug that is not there.
+    """
+
+    async def test_a_truncated_structured_reply_is_reported_as_running_out_of_room(
+        self,
+    ) -> None:
+        class Out(BaseModel):
+            value: str
+
+        provider = GeminiProvider(api_key="k")
+        # Valid JSON, so this cannot pass merely because parsing failed — the check has
+        # to be looking at the finish reason.
+        response = _http_response(content=json_dumps({"value": "ok"}), finish_reason="MAX_TOKENS")
+
+        with (
+            patch.object(provider._client, "post", AsyncMock(return_value=response)),
+            pytest.raises(InvalidModelResponseError) as exc_info,
+        ):
+            await provider.generate_structured(
+                system="s",
+                instruction="i",
+                context_blocks=_blocks(),
+                document_title="d.pdf",
+                output_model=Out,
+            )
+
+        assert "ran out of room" in exc_info.value.message
+
+    async def test_the_error_is_distinguishable_from_a_schema_mismatch(self) -> None:
+        """The distinction a caller acts on. A schema mismatch is a dead end; running
+        out of room means the request asked for more than one reply can hold, which is
+        why conversion can respond by asking for less at a time. Still an
+        `InvalidModelResponseError`, so every caller that does not care is unaffected —
+        including the HTTP status mapping, which matches on the parent class.
+        """
+
+        class Out(BaseModel):
+            value: str
+
+        provider = GeminiProvider(api_key="k")
+        response = _http_response(content=json_dumps({"value": "ok"}), finish_reason="MAX_TOKENS")
+
+        with (
+            patch.object(provider._client, "post", AsyncMock(return_value=response)),
+            pytest.raises(OutputTruncatedError) as exc_info,
+        ):
+            await provider.generate_structured(
+                system="s",
+                instruction="i",
+                context_blocks=_blocks(),
+                document_title="d.pdf",
+                output_model=Out,
+            )
+
+        assert isinstance(exc_info.value, InvalidModelResponseError)
+        assert exc_info.value.code == "output_truncated"
+
+    async def test_a_genuine_schema_mismatch_is_not_reported_as_truncation(self) -> None:
+        """The other side of the same distinction: a well-formed reply that does not fit
+        the schema must stay the plain error, or conversion would re-run the whole
+        document through windows to reach the identical mismatch."""
+
+        class Out(BaseModel):
+            value: str
+
+        provider = GeminiProvider(api_key="k")
+        response = _http_response(content=json_dumps({"wrong": "shape"}), finish_reason="STOP")
+
+        with (
+            patch.object(provider._client, "post", AsyncMock(return_value=response)),
+            pytest.raises(InvalidModelResponseError) as exc_info,
+        ):
+            await provider.generate_structured(
+                system="s",
+                instruction="i",
+                context_blocks=_blocks(),
+                document_title="d.pdf",
+                output_model=Out,
+            )
+
+        assert not isinstance(exc_info.value, OutputTruncatedError)
+
+    async def test_the_message_does_not_blame_the_response_format(self) -> None:
+        """The wording is the point of the fix, so it is asserted rather than assumed."""
+
+        class Out(BaseModel):
+            value: str
+
+        provider = GeminiProvider(api_key="k")
+        response = _http_response(content='{"value": "trunca', finish_reason="MAX_TOKENS")
+
+        with (
+            patch.object(provider._client, "post", AsyncMock(return_value=response)),
+            pytest.raises(InvalidModelResponseError) as exc_info,
+        ):
+            await provider.generate_structured(
+                system="s",
+                instruction="i",
+                context_blocks=_blocks(),
+                document_title="d.pdf",
+                output_model=Out,
+            )
+
+        assert "did not match the expected format" not in exc_info.value.message
+
+    async def test_a_normal_finish_reason_still_parses(self) -> None:
+        """Guards the check itself: it must not reject healthy replies."""
+
+        class Out(BaseModel):
+            value: str
+
+        provider = GeminiProvider(api_key="k")
+        response = _http_response(content=json_dumps({"value": "ok"}), finish_reason="STOP")
+
+        with patch.object(provider._client, "post", AsyncMock(return_value=response)):
+            result = await provider.generate_structured(
+                system="s",
+                instruction="i",
+                context_blocks=_blocks(),
+                document_title="d.pdf",
+                output_model=Out,
+            )
+
+        assert isinstance(result.parsed, Out)
+        assert result.parsed.value == "ok"
+
+    async def test_prose_generation_is_unaffected_by_a_length_stop(self) -> None:
+        """Truncated prose is still readable text, so it is returned with the finish
+        reason attached rather than thrown away. Only structured output is fatal."""
+        provider = GeminiProvider(api_key="k")
+        response = _http_response(content="A partial answer", finish_reason="MAX_TOKENS")
+
+        with patch.object(provider._client, "post", AsyncMock(return_value=response)):
+            result = await provider.generate(
+                system="s", instruction="i", context_blocks=_blocks(), document_title="d.pdf"
+            )
+
+        assert result.text == "A partial answer"
+        assert result.stop_reason == "MAX_TOKENS"
 
 
 def json_dumps(value: dict[str, Any]) -> str:

@@ -38,9 +38,11 @@ from app.ai.conversion_planner import (
 from app.ai.conversion_schema import vocabulary_arguments
 from app.ai.corrections import CorrectionReview, review_corrections
 from app.ai.providers.base import LLMProvider
+from app.core.config import Settings
 from app.core.exceptions import (
     InsufficientContentError,
     InvalidModelResponseError,
+    OutputTruncatedError,
     ValidationError,
 )
 from app.core.logging import get_logger
@@ -106,9 +108,89 @@ class ConversionResult:
 class ConversionService:
     """Turns a document plus an instruction into a new, organized document."""
 
-    def __init__(self, *, analysis: AnalysisService, provider: LLMProvider) -> None:
+    def __init__(
+        self, *, analysis: AnalysisService, provider: LLMProvider, settings: Settings
+    ) -> None:
         self._analysis = analysis
         self._provider = provider
+        self._settings = settings
+
+    async def _extract_records(
+        self, document_id: UUID, instruction: str, *, owner_id: str, refresh: bool
+    ) -> StructureResult:
+        """Step 1, by whichever route this document's size calls for.
+
+        Only step 1 reads the document — the plan sees three sample records, and
+        everything after it works on records rather than text — so this is the only
+        place in the pipeline where a document's length changes what happens. Steps 2
+        to 6 are given a flat list of records and cannot tell how many calls produced
+        it.
+
+        The measure is extracted content, not file size, and the threshold is the same
+        number as the window budget: if the document fits one window there is nothing to
+        window, so it takes the path it has always taken. Below the threshold this
+        method is a direct call to ``structure()`` with the same arguments the service
+        passed before windowing existed.
+
+        **Length is not the only way a document can be too big.** What overruns the reply
+        is ``records x tokens per record``, and a short document can hold more records
+        than a long one — a 30,000-token register states one per line where a 300,000-token
+        contract states a handful in total. No amount of measuring the *input* predicts
+        that, because the number that decides it is how many records are in there, and the
+        only way to learn that is to look.
+
+        So the below-threshold path is left exactly as it was and the answer is checked
+        instead. A reply that ran out of room now says so specifically
+        (:class:`OutputTruncatedError`, from the provider's ``MAX_TOKENS`` check), which
+        is a different fact from "the reply did not match the schema": it means the
+        request asked for more than one answer could hold, and asking for less at a time
+        is precisely what windowing does. That is the fallback, and it reuses the same
+        sizing the large-document path uses — there is no second threshold and no second
+        formula, only a second occasion for the same one.
+
+        The cost is one wasted call, paid only by a document that would otherwise have
+        returned a fraction of its records and said nothing about it.
+        """
+        if not self._settings.conversion_chunking_enabled:
+            return await self._analysis.structure(
+                document_id, owner_id=owner_id, instruction=instruction, refresh=refresh
+            )
+
+        window_tokens = self._settings.conversion_chunk_window_tokens
+        estimated = await self._analysis.content_token_estimate(document_id, owner_id=owner_id)
+
+        if estimated <= window_tokens:
+            try:
+                return await self._analysis.structure(
+                    document_id, owner_id=owner_id, instruction=instruction, refresh=refresh
+                )
+            except OutputTruncatedError:
+                # Deliberately the narrow subclass. Catching InvalidModelResponseError
+                # would also re-run genuine schema mismatches through the whole windowed
+                # pipeline, at full cost, to arrive at the same mismatch.
+                logger.info(
+                    "Single-call extraction overran the reply; falling back to windows "
+                    "document_id=%s estimated_tokens=%d",
+                    document_id,
+                    estimated,
+                )
+        else:
+            logger.info(
+                "Windowing conversion extraction document_id=%s estimated_tokens=%d threshold=%d",
+                document_id,
+                estimated,
+                window_tokens,
+            )
+
+        return await self._analysis.structure_windowed(
+            document_id,
+            owner_id=owner_id,
+            instruction=instruction,
+            window_tokens=window_tokens,
+            concurrency=self._settings.conversion_chunk_concurrency,
+            min_window_tokens=self._settings.conversion_chunk_min_window_tokens,
+            refresh=refresh,
+        )
 
     async def convert(
         self,
@@ -148,9 +230,12 @@ class ConversionService:
             )
 
         # 1. Source records, from the extraction pipeline that already exists. The same
-        #    instruction drives it, since it is what says which fields matter.
-        structure = await self._analysis.structure(
-            document_id, owner_id=owner_id, instruction=cleaned, refresh=refresh
+        #    instruction drives it, since it is what says which fields matter. A long
+        #    document is read in windows; a short one takes the single call it always
+        #    did. Either way what comes back here is one flat list of records, and
+        #    nothing below this line knows which route produced it.
+        structure = await self._extract_records(
+            document_id, cleaned, owner_id=owner_id, refresh=refresh
         )
         records: tuple[tuple[ExtractedField, ...], ...] = structure.insight.records
         schema = structure.schema

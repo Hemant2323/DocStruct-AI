@@ -164,6 +164,24 @@ class InvalidModelResponseError(AIError):
     expose_message = True
 
 
+class OutputTruncatedError(InvalidModelResponseError):
+    """The reply hit the output token ceiling and stopped mid-answer.
+
+    A subclass rather than a separate error because it *is* an unusable response and every
+    caller that does not care about the distinction should keep treating it as one — the
+    HTTP status, the exposed message and the logging are all inherited unchanged.
+
+    What the distinction buys is one decision. "The reply did not match the schema" is a
+    dead end: retrying it differently would produce the same mismatch. "The reply ran out
+    of room" is not — it says the request asked for more than one answer can hold, which
+    is a thing the caller can act on by asking for less at a time. Conversion uses exactly
+    that to fall back from one call to windowed extraction. Catching the parent class
+    there instead would re-run genuine schema failures as well, at full cost, to no end.
+    """
+
+    code = "output_truncated"
+
+
 class ContextTooLargeError(ValidationError):
     """The document is too large to send even after optimization.
 

@@ -11,26 +11,33 @@ here — deterministic, free, fast, and testable without a network.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
+from pydantic import BaseModel
+
 from app.ai.citations import resolve_citations, verify_quote
-from app.ai.context_builder import build_context, describe_context
+from app.ai.context_builder import blocks_from_chunks, build_context, describe_context
 from app.ai.dynamic_schema import (
     InferredStructureSchema,
     build_dynamic_record_list_model,
     canonicalize_schema,
     schema_from_inference,
 )
+from app.ai.optimization import select_chunks
 from app.ai.prompts import explain, extract, summarize
 from app.ai.prompts import structure as structure_prompt
 from app.ai.prompts import structure_schema as structure_schema_prompt
 from app.ai.providers.base import LLMProvider
 from app.ai.schemas import DEFAULT_EXTRACTION_SCHEMA, get_extraction_schema
+from app.ai.windows import ContextWindow, adaptive_window_tokens, plan_windows
 from app.core.config import Settings
 from app.core.exceptions import (
     AIConfigurationError,
+    AIUnavailableError,
     InsufficientContentError,
     InvalidModelResponseError,
     NotFoundError,
@@ -42,14 +49,16 @@ from app.models.domain.document import Document, ProcessingStatus
 from app.models.domain.insight import (
     Citation,
     ContextBlock,
+    ContextMode,
     ContextStats,
     ExtractedField,
     Insight,
     InsightKind,
+    ModelResult,
 )
 from app.repositories.ai_result_repo import AIResultRepository
 from app.repositories.block_repo import ContentBlockRepository
-from app.repositories.chunk_repo import ChunkRepository
+from app.repositories.chunk_repo import Chunk, ChunkRepository
 from app.repositories.document_repo import DocumentRepository
 
 logger = get_logger(__name__)
@@ -388,6 +397,366 @@ class AnalysisService:
         saved = await self._results.save(insight, owner_id=owner_id, fingerprint=fingerprint)
         return StructureResult(insight=saved, schema=resolved_schema)
 
+    async def content_token_estimate(self, document_id: UUID, *, owner_id: str) -> int:
+        """How much extracted content this document holds, in estimated tokens.
+
+        The measure a caller should size a request against, and deliberately not the
+        uploaded file's size in bytes: a 40MB scanned PDF and a 40MB spreadsheet have
+        nothing in common once parsed, and it is the parsed text that becomes the
+        request. Uses the per-chunk estimates ingestion already stored, so this costs one
+        query and no arithmetic over document text.
+        """
+        await self._ready_document(document_id, owner_id=owner_id)
+        chunks = await self._chunks.list_for_document(document_id)
+        return sum(chunk.token_estimate for chunk in chunks)
+
+    async def structure_windowed(
+        self,
+        document_id: UUID,
+        *,
+        owner_id: str,
+        instruction: str,
+        window_tokens: int,
+        concurrency: int,
+        min_window_tokens: int,
+        refresh: bool = False,
+    ) -> StructureResult:
+        """Extract records from a large document by reading it in windows.
+
+        Same contract as :meth:`structure` in instruction mode, and the same result type
+        — the difference is entirely in how many calls it takes to get there. The
+        document is divided into windows of whole chunks (:mod:`app.ai.windows`), each
+        window is extracted on its own, and the records are concatenated in window order.
+
+        Why this exists is worth stating precisely, because it is not what a reader
+        expects. The problem a long document runs into is not the input context — the
+        provider's window is far larger than any document this project handles — but the
+        *reply*, which must carry every record found and is capped by
+        ``ai_max_output_tokens`` no matter how little was sent in. One call over a long
+        document therefore returns as many records as fit and drops the rest. Windowing
+        gives each reply a smaller share of the document to account for.
+
+        Three properties this method is responsible for keeping:
+
+        * **Nothing is invented across windows.** Each call sees only its own text, so a
+          field the document never states near record 4 cannot be filled in from
+          somewhere near record 400. There is no merge-time gap filling, and none will
+          be added.
+        * **Provenance is untouched.** A :class:`Citation` carries a resolved
+          ``Provenance`` and the chunk and block ids behind it — absolute coordinates,
+          not offsets into the window that produced them — so merging moves citations
+          without rewriting any of them.
+        * **Record indices are positional, and assigned after the merge.** Nothing
+          downstream can tell how many calls produced the list.
+
+        Args:
+            document_id: The source document.
+            owner_id: Whose document it is. Every read below is owner-scoped.
+            instruction: What the user wants, in their own words. Drives schema
+                inference exactly as it does in :meth:`structure`.
+            window_tokens: The *largest* a window may be, and the size used when record
+                density cannot be measured.
+            concurrency: How many windows may be in flight at once.
+            min_window_tokens: The smallest a window may be, and the size the first
+                window is planned at so it can measure density safely.
+            refresh: Re-extract instead of serving a cached windowed extraction.
+
+        Returns:
+            The merged extraction and the schema that produced it.
+
+        Raises:
+            InsufficientContentError: The document has no content, or no window yielded
+                a single record.
+            InvalidModelResponseError: Schema inference produced nothing usable.
+            AIUnavailableError: Every window failed.
+            AIConfigurationError: The provider is not configured.
+        """
+        document = await self._ready_document(document_id, owner_id=owner_id)
+        chunks = await self._chunks.list_for_document(document_id)
+        if not chunks:
+            raise InsufficientContentError("This document has no extracted content to analyse.")
+
+        # Measured against the *floor*, not the ceiling. "Is there anything to window?"
+        # means "would this divide into more than one piece at the smallest size we use",
+        # and asking it at the maximum instead would send every below-threshold document
+        # straight back to `structure()` — including the one that arrived here precisely
+        # because `structure()` could not fit its answer in one reply.
+        windows = plan_windows(chunks, window_tokens=min(min_window_tokens, window_tokens))
+
+        # A document that is one minimum window has nothing left to divide. Handing it to
+        # `structure()` rather than running the general path over a sequence of one is
+        # what makes "small documents are unchanged" a fact about the code rather than a
+        # promise about my care in preserving it: the same method runs, against the same
+        # cache, and produces the fingerprint it always did. If that document is *also*
+        # too dense to answer in one reply, the truncation propagates — no window size
+        # can rescue a document already at the floor, and saying so is the honest end.
+        if len(windows) <= 1:
+            return await self.structure(
+                document_id, owner_id=owner_id, instruction=instruction, refresh=refresh
+            )
+
+        self._require_provider()
+
+        # Schema inference sees a representative sample rather than the whole document.
+        # It has to see *something* — field choices have to be grounded in real content —
+        # but it is choosing field names, not extracting values, and running it per
+        # window would multiply the cost of the cheap half of the job. The sample comes
+        # from the same deterministic selector the optimization path uses, so it spans
+        # the document rather than being its opening pages.
+        sample = select_chunks(chunks, target_tokens=window_tokens) or list(chunks[:1])
+        inference = await self._provider.generate_structured(
+            system=structure_schema_prompt.SYSTEM,
+            instruction=structure_schema_prompt.build_instruction(instruction),
+            context_blocks=blocks_from_chunks(sample),
+            document_title=document.original_filename,
+            output_model=InferredStructureSchema,
+        )
+        if inference.parsed is None:
+            raise InvalidModelResponseError(
+                "The AI could not turn this instruction into a field schema."
+            )
+        resolved_schema = schema_from_inference(inference.parsed)
+        input_tokens = inference.input_tokens
+        output_tokens = inference.output_tokens
+
+        fingerprint = self._windowed_structure_fingerprint(resolved_schema, window_tokens)
+        if not refresh:
+            cached = await self._results.get(
+                document_id, owner_id=owner_id, fingerprint=fingerprint
+            )
+            if cached is not None:
+                return StructureResult(insight=_mark_cached(cached), schema=resolved_schema)
+
+        # Every block behind every window, in one query rather than one per window.
+        needed = [block_id for chunk in chunks for block_id in chunk.block_ids]
+        blocks_by_id = await self._blocks.get_by_ids(list(dict.fromkeys(needed)))
+
+        output_model = build_dynamic_record_list_model(resolved_schema)
+        windows, outcomes = await self._extract_adaptively(
+            chunks,
+            document_title=document.original_filename,
+            output_model=output_model,
+            concurrency=concurrency,
+            field_count=len(resolved_schema),
+            min_window_tokens=min(min_window_tokens, window_tokens),
+            max_window_tokens=window_tokens,
+        )
+
+        records: list[tuple[ExtractedField, ...]] = []
+        citations: list[Citation] = []
+        unverified = 0
+        field_count = 0
+        failed = 0
+
+        # Iterated in window order, which is document order, so the merged record list
+        # reads the way the document does. `outcomes` is index-aligned with `windows`
+        # because gather preserves the order of what it was given.
+        for window, outcome in zip(windows, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                logger.warning(
+                    "Window extraction failed document_id=%s window=%d location=%s error=%s",
+                    document_id,
+                    window.index,
+                    window.location_label,
+                    outcome.__class__.__name__,
+                )
+                failed += 1
+                continue
+
+            input_tokens += outcome.input_tokens
+            output_tokens += outcome.output_tokens
+
+            (
+                window_records,
+                window_citations,
+                window_unverified,
+                window_fields,
+            ) = _records_from_parsed(
+                outcome.parsed,
+                resolved_schema,
+                blocks_from_chunks(window.chunks),
+                blocks_by_id,
+            )
+            records.extend(window_records)
+            citations.extend(window_citations)
+            unverified += window_unverified
+            field_count += window_fields
+
+        if failed == len(windows):
+            # Nothing came back at all. Reported as the failure it is rather than as an
+            # empty success, which is what a bare merge of zero results would look like.
+            raise AIUnavailableError(
+                "The AI could not read this document. Please try again in a moment."
+            )
+
+        if not records:
+            raise InsufficientContentError(
+                "None of the requested fields could be found in this document."
+            )
+
+        warnings = [
+            f"This document was read in {len(windows)} parts because of its length. "
+            "Every part was sent in full."
+        ]
+        if failed:
+            # Never silent. A partial result that looks whole is worse than a failure:
+            # nothing about the records themselves reveals that a stretch of the document
+            # is missing from them.
+            warnings.append(
+                f"{failed} of {len(windows)} parts of this document could not be read, so "
+                "records from those parts are missing. Try again to include them."
+            )
+        if unverified:
+            warnings.append(
+                f"{unverified} of {field_count} fields across {len(records)} records "
+                "could not be traced to a confirmed location in the document and are "
+                "marked accordingly."
+            )
+
+        insight = Insight(
+            document_id=document_id,
+            kind=InsightKind.EXTRACTION,
+            records=tuple(records),
+            citations=tuple(citations),
+            # Accurate: every window was sent whole, so nothing was dropped to fit. The
+            # document was divided, not reduced, and those are different claims.
+            context_mode=ContextMode.FULL,
+            model=self._provider.model_name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            warnings=tuple(warnings),
+        )
+        logger.info(
+            "Windowed extraction document_id=%s windows=%d failed=%d records=%d",
+            document_id,
+            len(windows),
+            failed,
+            len(records),
+        )
+        saved = await self._results.save(insight, owner_id=owner_id, fingerprint=fingerprint)
+        return StructureResult(insight=saved, schema=resolved_schema)
+
+    async def _extract_adaptively(
+        self,
+        chunks: list[Chunk],
+        *,
+        document_title: str,
+        output_model: type[BaseModel],
+        concurrency: int,
+        field_count: int,
+        min_window_tokens: int,
+        max_window_tokens: int,
+    ) -> tuple[list[ContextWindow], list[ModelResult | BaseException]]:
+        """Extract the whole document, sizing its windows from what the first one finds.
+
+        Two phases, because the number that decides the right window size — how densely
+        this document packs records — is not knowable from the text. It is a property of
+        the source and the instruction together, and the only honest way to learn it is to
+        extract some and count.
+
+        So the first window is planned at ``min_window_tokens``: small enough to be safe
+        at any density, and its records are kept, so it is a real window rather than a
+        probe paid for and discarded. Its answer gives a records-per-token figure, and
+        :func:`adaptive_window_tokens` turns that plus the schema's field count into the
+        largest remaining window whose reply can finish. The rest of the document is
+        re-planned at that size and run concurrently, exactly as before.
+
+        The cost is one serialized round trip: the tail cannot start until the first
+        window returns. That is the price of measuring rather than guessing, and it buys
+        the difference between 13% and 100% coverage on a dense document.
+
+        Returns:
+            The windows as they were finally planned, and one outcome each, index-aligned.
+        """
+        # A document short enough to be one minimum-sized window has no tail to size.
+        first_batch = plan_windows(chunks, window_tokens=min_window_tokens)
+        probe = first_batch[0]
+        probe_outcome = (
+            await self._extract_windows(
+                [probe],
+                document_title=document_title,
+                output_model=output_model,
+                concurrency=1,
+            )
+        )[0]
+
+        remaining = chunks[len(probe.chunks) :]
+        if not remaining:
+            return [probe], [probe_outcome]
+
+        observed_records = (
+            len(getattr(probe_outcome.parsed, "records", None) or ())
+            if not isinstance(probe_outcome, BaseException)
+            else 0
+        )
+        sized = adaptive_window_tokens(
+            observed_records=observed_records,
+            observed_tokens=probe.token_estimate,
+            field_count=field_count,
+            max_output_tokens=self._settings.ai_max_output_tokens,
+            min_window_tokens=min_window_tokens,
+            max_window_tokens=max_window_tokens,
+        )
+        if isinstance(probe_outcome, BaseException):
+            # No measurement, and a failure is itself weak evidence that the window was
+            # too much to answer. Staying at the floor is the safe direction: more calls,
+            # never a larger one than the size already known not to have worked.
+            sized = min_window_tokens
+
+        logger.info(
+            "Adaptive window sizing probe_tokens=%d probe_records=%d fields=%d window=%d",
+            probe.token_estimate,
+            observed_records,
+            field_count,
+            sized,
+        )
+
+        tail = plan_windows(remaining, window_tokens=sized, start_index=1)
+        tail_outcomes = await self._extract_windows(
+            tail,
+            document_title=document_title,
+            output_model=output_model,
+            concurrency=concurrency,
+        )
+        return [probe, *tail], [probe_outcome, *tail_outcomes]
+
+    async def _extract_windows(
+        self,
+        windows: Sequence[ContextWindow],
+        *,
+        document_title: str,
+        output_model: type[BaseModel],
+        concurrency: int,
+    ) -> list[ModelResult | BaseException]:
+        """Run one extraction per window, a few at a time.
+
+        A semaphore rather than a queue or a rate limiter of our own: the provider
+        already retries 429s on its own budget, and the one thing this layer must not do
+        is add a second retry system on top. ``concurrency x retries`` requests all
+        arriving inside the same rate-limit window is how a higher concurrency setting
+        produces a slower, half-failed run.
+
+        Exceptions are returned rather than raised. One window failing is a partial
+        result the caller can report honestly; letting it abort the gather would throw
+        away the windows that succeeded, which is a worse answer than a stated partial
+        one.
+        """
+        limiter = asyncio.Semaphore(concurrency)
+
+        async def run(window: ContextWindow) -> ModelResult:
+            async with limiter:
+                return await self._provider.generate_structured(
+                    system=structure_prompt.SYSTEM,
+                    instruction=structure_prompt.INSTRUCTION,
+                    context_blocks=blocks_from_chunks(window.chunks),
+                    document_title=document_title,
+                    output_model=output_model,
+                )
+
+        return list(
+            await asyncio.gather(*(run(window) for window in windows), return_exceptions=True)
+        )
+
     async def list_insights(self, document_id: UUID, *, owner_id: str) -> list[Insight]:
         """Return every AI result already produced for a document."""
         await self._ready_document(document_id, owner_id=owner_id, require_ready=False)
@@ -577,6 +946,24 @@ class AnalysisService:
             structure_prompt.VERSION,
             optimize_context=False,
             schema_name="__structure__",
+            schema_fields=schema,
+        )
+
+    def _windowed_structure_fingerprint(self, schema: dict[str, str], window_tokens: int) -> str:
+        """The cache fingerprint for a windowed extraction.
+
+        Kept separate from :meth:`_structure_fingerprint` on purpose, and keyed on the
+        window size as well as the schema. Two runs over the same document with the same
+        fields are genuinely different analyses when one read it whole and the other read
+        it in eight parts — the second finds records the first could not fit in its
+        reply. Sharing a key would let whichever ran first answer for both, which is the
+        one way this feature could quietly undo itself.
+        """
+        return self._fingerprint(
+            InsightKind.EXTRACTION,
+            structure_prompt.VERSION,
+            optimize_context=False,
+            schema_name=f"__structure_windowed_{window_tokens}__",
             schema_fields=schema,
         )
 

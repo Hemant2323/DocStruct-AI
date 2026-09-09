@@ -103,6 +103,29 @@ reported. Every result carries that full audit, in every format that can express
 Retrieval and download are database-only — fetching a conversion again never re-runs the
 AI, and never costs anything.
 
+**Long documents are read in parts.** A single extraction call has to return every record
+it finds in one reply, and that reply has a token ceiling — so past a certain length a
+document simply holds more records than one answer can carry, and the rest go missing
+without saying so. Above `CONVERSION_CHUNK_WINDOW_TOKENS` (measured on extracted content,
+not file size) the document is divided into windows of whole sections, each read on its
+own, and the records are merged back in document order. How large those windows are is
+worked out per document rather than fixed: the first one is deliberately small, and how
+many records it turns up — together with how many fields were asked for — decides how much
+of the document each following window can safely cover. A page of prose and a page of a
+register are the same size to read and very different sizes to answer.
+
+Length is not the only way a document can be too big for one answer, so it is not the only
+thing checked. A short document packed with records can hold more of them than a single
+reply can carry — and when that happens the reply now says so rather than quietly stopping
+short, and the document is read again in parts automatically. Nothing about a document
+that answers cleanly the first time changes.
+
+Windows never overlap and never split a table, and each one only ever sees its own text —
+so nothing can be carried over from an unrelated part of the document. If one part fails
+to read, the result says which and how many rather than looking complete. Everything after
+extraction, including the correction validator, still runs once over the whole merged
+result.
+
 **Explicitly out of scope for the MVP:** OCR and scanned documents, document comparison,
 financial analysis, knowledge graphs, agents, and advanced analytics. The architecture is
 designed to accommodate them later — see [Future features](#future-features).

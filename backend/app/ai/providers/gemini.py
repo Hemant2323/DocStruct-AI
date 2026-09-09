@@ -52,6 +52,7 @@ from app.core.exceptions import (
     AIConfigurationError,
     AIUnavailableError,
     InvalidModelResponseError,
+    OutputTruncatedError,
 )
 from app.core.logging import get_logger
 from app.models.domain.insight import ContextBlock, ModelResult
@@ -80,6 +81,15 @@ _BLOCKED_MESSAGE = (
     "The AI declined to analyse this document. This can happen with unusual or "
     "sensitive content. Try a different document."
 )
+
+#: finishReason meaning the reply hit `ai_max_output_tokens` and stops mid-token.
+#:
+#: Distinct from the safety reasons above and handled separately, because the two need
+#: opposite treatment. A safety stop means there is no usable answer at all. A length
+#: stop means the answer was real and simply ran out of room — harmless for prose, and
+#: fatal for structured output, where a JSON document cut mid-object cannot be parsed
+#: and must never be half-parsed into records.
+_TRUNCATED_FINISH_REASON = "MAX_TOKENS"
 
 
 class GeminiProvider(LLMProvider):
@@ -207,6 +217,21 @@ class GeminiProvider(LLMProvider):
         self._check_blocked(data)
 
         candidate = _first_candidate(data)
+
+        # Checked before parsing, not after. A truncated reply fails `json.loads` too,
+        # but as "did not match the expected format" — which sends whoever reads it
+        # looking for a schema bug that does not exist. The cause is the output ceiling,
+        # and the fix is to ask for less at a time, so that is what the error says.
+        if candidate.get("finishReason") == _TRUNCATED_FINISH_REASON:
+            logger.warning(
+                "Gemini reply hit the output token ceiling max_output_tokens=%d",
+                self._max_output_tokens,
+            )
+            raise OutputTruncatedError(
+                "The AI ran out of room before it finished answering. This usually means "
+                "the document holds more information than one reply can carry."
+            )
+
         raw_content = _extract_text(candidate)
 
         try:

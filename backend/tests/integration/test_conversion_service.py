@@ -278,7 +278,7 @@ def build_service(db_session: AsyncSession, settings: Settings):  # type: ignore
             blocks=ContentBlockRepository(db_session),
             results=AIResultRepository(db_session),
         )
-        return ConversionService(analysis=analysis, provider=provider)
+        return ConversionService(analysis=analysis, provider=provider, settings=settings)
 
     return _build
 

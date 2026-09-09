@@ -12,6 +12,8 @@ mechanism.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from app.core.exceptions import ContextTooLargeError, InsufficientContentError
 from app.ingestion.chunker import estimate_tokens
 from app.models.domain.insight import ContextBlock, ContextMode, ContextStats
@@ -103,6 +105,19 @@ def build_context(
         omitted_chunk_count=len(chunks) - len(selected),
         was_requested=should_optimize,
     )
+
+
+def blocks_from_chunks(chunks: Sequence[Chunk]) -> list[ContextBlock]:
+    """Turn chunks into context blocks, in order, sending all of them.
+
+    The path for a caller that has already decided what to send — windowed extraction
+    sizes each window to fit before it gets here, so there is nothing left to select and
+    no ``ContextStats`` to report. It exists so that windowing does not grow a second
+    way of building a context block: position *n* in the returned list is block index
+    *n* to the model, and that convention has to be identical everywhere or citations
+    resolve to the wrong place.
+    """
+    return [_to_block(chunk) for chunk in chunks]
 
 
 def _to_block(chunk: Chunk) -> ContextBlock:

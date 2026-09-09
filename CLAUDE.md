@@ -525,6 +525,92 @@ audit id kept), `STRUCTURAL` (a heading the user asked for), or `ABSENT`. There 
 representation for "text that appeared from nowhere". A field the source does not state
 stays blank in every output format.
 
+### Large documents are read in windows
+
+**The ceiling that matters is the output ceiling, not the context window.** Extraction must
+emit every record it finds in one structured reply, capped by `ai_max_output_tokens`
+however little was sent in. Past some size a document holds more records than one reply
+can carry, and the surplus is lost. The input context is not the constraint — the
+provider's window is far larger than any document this project handles.
+
+So above `conversion_chunk_window_tokens` (default 40,000, measured on extracted content
+via the per-chunk estimates ingestion already stored — never on file size), extraction
+runs once per **window**: a run of whole stored chunks sized to the budget.
+
+**Window size is derived, not configured.** What fills a reply is
+`records x tokens per record`, and both vary per document — density is a property of the
+source, and per-record cost scales with how many fields the schema asks for. One constant
+can only be right at one point in that space. So:
+
+* the schema is known before any window runs, giving `output_tokens_per_record`;
+* window 0 is planned at `conversion_chunk_min_window_tokens` (default 2,000), small
+  enough to be safe at any density, and its records measure density — it is a real
+  window, kept, not a probe paid for and thrown away;
+* `adaptive_window_tokens` turns those two into the largest remaining window whose reply
+  can finish, clamped between the floor and `conversion_chunk_window_tokens`;
+* the rest of the document is re-planned at that size and run concurrently as before.
+
+Errors land on the safe side by construction: over-estimating density gives windows that
+are too small — more calls, same records. If window 0 fails there is no measurement, so
+everything stays at the floor. If nothing is found there is no evidence of density, so the
+maximum is used — the size the document would have had anyway. And if a window overflows
+regardless, the `MAX_TOKENS` check makes it *fail* rather than truncate, so it surfaces as
+a partial-failure warning instead of a quietly short answer.
+
+The cost is one serialized round trip: the tail cannot start until window 0 returns.
+
+**Length is not the only way a document is too big, so size is not the only trigger.**
+What overruns a reply is `records x tokens per record`, and a short dense document can
+hold more records than a long sparse one. No measurement of the input predicts that, so
+the below-threshold path is left exactly as it was and the *answer* is checked instead:
+a reply that ran out of room raises `OutputTruncatedError` (the provider's `MAX_TOKENS`
+check), and `ConversionService._extract_records` catches precisely that and re-runs the
+document through `structure_windowed`. Same sizing, same formula, a second occasion for
+it — not a second threshold.
+
+Catch the subclass, never `InvalidModelResponseError`: a reply that did not match the
+schema will not match it in smaller pieces, so re-running it windowed costs a great deal
+to reach the same failure. And when a document is *already* one minimum-sized window
+there is nothing left to divide, so the truncation propagates rather than the fallback
+calling itself — which is why `structure_windowed` measures "is there anything to window"
+against the floor rather than the ceiling.
+
+The cost is one wasted call, paid only by a document that would otherwise have returned a
+fraction of its records and said nothing about it.
+
+* **Only step 1 is windowed.** The plan, the correction proposals, the review, the
+  assembly and the rendering all run **once**, over the merged record list. That is not an
+  optimization — `ProposedCorrection.record_index` is an index into the flat record list,
+  so per-window corrections would need remapping on merge, in exactly the code that
+  protects the user's data. Running the validator once means indices are globally correct
+  by construction.
+* **Record indices are assigned after merging**, positionally. Nothing downstream can tell
+  how many calls produced the list.
+* **Nothing is invented across windows.** Each call sees only its own text. There is no
+  merge-time gap filling and none may be added — a field absent near record 4 must not be
+  supplied from near record 400.
+* **Provenance needs no remapping.** A `Citation` carries resolved `Provenance` plus chunk
+  and block ids — absolute coordinates, not offsets into the window.
+* **No re-chunking.** `app/ai/windows.py` groups *stored* chunks; it never splits one. The
+  ingestion chunker already guarantees a heading starts a chunk and a table is never
+  split, so whole-chunk windows inherit that. Windows never overlap — overlap would
+  extract a record twice and leave the merge deciding whether two records are the same.
+* **A partial failure is stated, never smoothed over.** Failed windows are dropped from
+  the result with a warning naming how many; every window failing raises. A partial result
+  that looks whole is worse than a failure.
+* **One retry system only.** Concurrency is a semaphore
+  (`conversion_chunk_concurrency`, default 3); the provider owns retries. A second retry
+  layer would multiply into `concurrency × retries` requests inside one rate-limit window.
+
+Below the threshold, `ConversionService` calls `AnalysisService.structure()` with the same
+arguments it always did — the small-document path is the *same code*, not a preserved
+copy of it. `conversion_chunking_enabled=false` forces every document down it.
+
+**Before changing either bound, run `scripts/benchmark_conversion.py`.** It compares all
+three paths over both document shapes and imports the sizing arithmetic rather than
+copying it. Do not assume windowing is faster — it makes more calls, and at high density
+it makes a great many. What it buys is completeness.
+
 ### Persistence and retrieval
 
 Conversions live in their own table (`document_conversions`), not in `ai_results` — they

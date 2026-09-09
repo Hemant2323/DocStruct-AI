@@ -79,6 +79,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Tests may use assert (S101) and hardcoded throwaway values (S105/S106).
 "tests/**/*.py" = ["S101", "S105", "S106"]
+# Benchmarks are command-line tools whose entire output is printed to a terminal, so
+# T201 would flag the feature. They are not imported by the application.
+"scripts/**/*.py" = ["T201"]
 # Alembic templates are generated; migrations are intentionally verbose.
 "alembic/**/*.py" = ["I001"]
 # The normalizer's translation table is *made of* look-alike characters — flagging them

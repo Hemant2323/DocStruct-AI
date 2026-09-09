@@ -307,6 +307,7 @@ def get_conversion_repository(
 def get_conversion_service(
     analysis: Annotated[AnalysisService, Depends(get_analysis_service)],
     provider: Annotated[LLMProvider, Depends(get_llm_provider)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> ConversionService:
     """Return a fully wired conversion service.
 
@@ -314,7 +315,7 @@ def get_conversion_service(
     records through the extraction pipeline that already exists, and does not have one
     of its own.
     """
-    return ConversionService(analysis=analysis, provider=provider)
+    return ConversionService(analysis=analysis, provider=provider, settings=settings)
 
 
 def get_job_service(request: Request) -> JobService:
