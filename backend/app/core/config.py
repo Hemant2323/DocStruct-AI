@@ -154,7 +154,7 @@ class Settings(BaseSettings):
     #: reports itself as unconfigured, exactly like ClaudeProvider and NVIDIAProvider do.
     gemini_api_key: str | None = None
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.6-flash"
 
     #: Separate from `gemini_model`: that setting is for generation (GeminiProvider —
     #: /summary, /explanation, /structure); this one is for embeddings (GeminiEmbedder —

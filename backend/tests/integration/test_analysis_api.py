@@ -627,7 +627,7 @@ class TestAIStatusFollowsTheActiveProvider:
             monkeypatch,
             AI_PROVIDER="gemini",
             GEMINI_API_KEY="test-key-not-real",
-            GEMINI_MODEL="gemini-2.5-flash",
+            GEMINI_MODEL="gemini-3.6-flash",
         )
 
         async with AsyncClient(
@@ -637,7 +637,7 @@ class TestAIStatusFollowsTheActiveProvider:
 
         assert response.status_code == 200
         assert response.json()["configured"] is True
-        assert response.json()["model"] == "gemini-2.5-flash"
+        assert response.json()["model"] == "gemini-3.6-flash"
 
     async def test_gemini_without_a_key_reports_unconfigured(
         self, app: FastAPI, api_prefix: str, monkeypatch: pytest.MonkeyPatch

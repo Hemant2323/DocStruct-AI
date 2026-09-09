@@ -237,7 +237,7 @@ class TestGeminiSettings:
         settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
         assert settings.gemini_base_url == "https://generativelanguage.googleapis.com/v1beta"
-        assert settings.gemini_model == "gemini-2.5-flash"
+        assert settings.gemini_model == "gemini-3.6-flash"
 
     def test_embedding_model_defaults_to_a_real_embedding_model_not_the_chat_model(
         self,

@@ -62,10 +62,16 @@ logger = get_logger(__name__)
 #: Google's Generative Language API root.
 DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
-#: Best-effort default. Unlike the NVIDIA integration, no exact model string was
-#: specified for this one — override via the constructor (and, once configuration
-#: wiring is added, via GEMINI_MODEL) rather than relying on this being current.
-DEFAULT_MODEL = "gemini-2.5-flash"
+#: Best-effort default. Override via the constructor or GEMINI_MODEL rather than relying
+#: on this being current.
+#:
+#: Was ``gemini-2.5-flash`` until it began returning 404 in deployment. The model is still
+#: listed by ListModels, which is what makes the failure confusing — but calling it with a
+#: newly issued key returns "This model models/gemini-2.5-flash is no longer available to
+#: new users. Please update your code to use models/gemini-3.6-flash". So a key that
+#: worked before a retirement keeps working while a fresh one 404s, and the replacement
+#: below is the one the API itself names.
+DEFAULT_MODEL = "gemini-3.6-flash"
 
 #: HTTP statuses worth retrying: rate limiting and transient server-side failure.
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})

@@ -159,7 +159,7 @@ class TestRequestConstruction:
         provider = GeminiProvider(
             api_key="k",
             base_url="https://generativelanguage.googleapis.com/v1beta",
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
         )
         captured: dict[str, Any] = {}
 
@@ -174,14 +174,14 @@ class TestRequestConstruction:
 
         assert captured["url"] == (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            "gemini-2.5-flash:generateContent"
+            "gemini-3.6-flash:generateContent"
         )
 
     async def test_a_trailing_slash_on_the_base_url_does_not_double_up(self) -> None:
         provider = GeminiProvider(
             api_key="k",
             base_url="https://generativelanguage.googleapis.com/v1beta/",
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
         )
         captured: dict[str, Any] = {}
 
@@ -196,7 +196,7 @@ class TestRequestConstruction:
 
         assert captured["url"] == (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            "gemini-2.5-flash:generateContent"
+            "gemini-3.6-flash:generateContent"
         )
 
     async def test_the_key_is_sent_as_a_header_never_a_query_parameter(self) -> None:
