@@ -20,6 +20,7 @@ from app.ai.providers.gemini import GeminiProvider
 from app.ai.providers.nvidia import NVIDIAProvider
 from app.core.config import Settings, get_settings
 from app.core.database import get_db_session, get_session_factory
+from app.core.exceptions import ConfigurationError
 from app.repositories.ai_result_repo import AIResultRepository
 from app.repositories.block_repo import ContentBlockRepository
 from app.repositories.chunk_embedding_repo import ChunkEmbeddingRepository
@@ -37,6 +38,7 @@ from app.services.job_service import JobService
 from app.services.qa_service import QAService
 from app.storage.base import FileStorage
 from app.storage.local import LocalFileStorage
+from app.storage.supabase import SupabaseFileStorage
 
 # Milestone 1 has no authentication, so every request acts as this owner. The seam is
 # real: routes and services already take an owner_id and every query filters on it, so
@@ -54,9 +56,74 @@ def get_current_owner_id() -> str:
     return DEFAULT_OWNER_ID
 
 
-def get_file_storage(settings: Annotated[Settings, Depends(get_settings)]) -> FileStorage:
-    """Return the configured file storage backend."""
+#: Process-wide storage backend, held only when the selected one owns an HTTP connection
+#: pool. See `get_file_storage` for why the local backend is deliberately not cached.
+_file_storage: FileStorage | None = None
+
+
+def _build_file_storage(settings: Settings) -> FileStorage:
+    """Construct the backend named by ``settings.storage_backend``.
+
+    Kept separate from :func:`get_file_storage` for the same reason as
+    :func:`_build_provider`: the branching — the one part that changes when a backend is
+    added — is a small, direct function a test can call without FastAPI's dependency
+    machinery, a request, or a network.
+
+    Raises:
+        ConfigurationError: ``supabase`` was selected without the credentials it needs.
+            Raised here rather than falling back to local storage, because a silent
+            fallback would write uploads to a disk the operator believes is unused and
+            that a free host discards on the next deploy — the documents would be gone
+            and nothing would have said so.
+    """
+    if settings.storage_backend == "supabase":
+        if not settings.supabase_url or not settings.supabase_service_key:
+            raise ConfigurationError(
+                "STORAGE_BACKEND is 'supabase' but SUPABASE_URL and SUPABASE_SERVICE_KEY "
+                "are not both set."
+            )
+        return SupabaseFileStorage(
+            base_url=settings.supabase_url,
+            service_key=settings.supabase_service_key,
+            bucket=settings.supabase_storage_bucket,
+        )
+
+    # "local" is the default and the fallback for any value the validator already
+    # guarantees is one of the two known names — this branch cannot see anything else.
     return LocalFileStorage(settings.storage_dir)
+
+
+def get_file_storage(settings: Annotated[Settings, Depends(get_settings)]) -> FileStorage:
+    """Return the configured file storage backend.
+
+    Typed as the interface, not the implementation, so the services and routes that
+    depend on it cannot tell which backend is in use.
+
+    **Only the Supabase backend is cached.** `_provider` and `_embedder` are held
+    process-wide because they own HTTP connection pools that should not be rebuilt per
+    request, and `SupabaseFileStorage` is the same. `LocalFileStorage` is not: it holds a
+    resolved path and nothing else, so caching it would buy nothing and would pin the
+    first request's ``storage_dir`` for the life of the process — which is exactly what
+    the test suite varies per test.
+    """
+    if settings.storage_backend != "supabase":
+        return _build_file_storage(settings)
+
+    global _file_storage
+    if _file_storage is None:
+        _file_storage = _build_file_storage(settings)
+    return _file_storage
+
+
+def reset_file_storage() -> None:
+    """Drop the cached storage backend.
+
+    Used by tests, which change settings between cases and would otherwise get a backend
+    built from a previous test's configuration. Mirrors `reset_llm_provider` and
+    `reset_embedder`.
+    """
+    global _file_storage
+    _file_storage = None
 
 
 def get_document_repository(
