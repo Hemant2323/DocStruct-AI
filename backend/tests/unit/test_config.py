@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
-from app.core.config import AppEnv, Settings, get_settings
+from app.core.config import PROJECT_ROOT, AppEnv, Settings, get_settings
 
 
 def test_defaults_are_usable_without_any_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -401,7 +401,98 @@ class TestDatabaseUrlNormalization:
         assert Settings(_env_file=None).database_dialect == "postgresql"  # type: ignore[call-arg]
 
 
+class TestStorageBackend:
+    """STORAGE_BACKEND selects which `FileStorage` implementation is built.
+
+    Entirely new configuration, so these tests are additive and touch nothing existing.
+    "supabase" is accepted before that backend exists on purpose: the setting and its
+    validation land first so the implementation can arrive without touching services,
+    routes, or any test's isolation.
+    """
+
+    def test_defaults_to_local(self) -> None:
+        """Preserves existing behaviour for anyone not setting this explicitly."""
+        assert Settings(_env_file=None).storage_backend == "local"  # type: ignore[call-arg]
+
+    def test_accepts_supabase(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("STORAGE_BACKEND", "supabase")
+
+        assert Settings(_env_file=None).storage_backend == "supabase"  # type: ignore[call-arg]
+
+    def test_is_case_insensitive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("STORAGE_BACKEND", "  SUPABASE  ")
+
+        assert Settings(_env_file=None).storage_backend == "supabase"  # type: ignore[call-arg]
+
+    def test_an_unknown_backend_is_rejected_at_startup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fails at startup rather than at the first upload, by which point the request
+        has already been accepted and the caller told the file was received."""
+        monkeypatch.setenv("STORAGE_BACKEND", "s3")
+
+        with pytest.raises(PydanticValidationError, match="storage_backend must be one of"):
+            Settings(_env_file=None)  # type: ignore[call-arg]
+
+    def test_setting_a_backend_does_not_disturb_storage_dir(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The two are independent settings; selecting one must not blank the other."""
+        monkeypatch.setenv("STORAGE_BACKEND", "supabase")
+
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+        assert settings.storage_dir == PROJECT_ROOT / "storage"
+
+
+class TestSupabaseStorageSettings:
+    """Credentials for the Supabase backend. Optional, so the app still starts without
+    them — the same rule the AI provider keys follow."""
+
+    def test_url_and_key_default_to_unset(self) -> None:
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+        assert settings.supabase_url is None
+        assert settings.supabase_service_key is None
+
+    def test_bucket_has_a_usable_default(self) -> None:
+        assert Settings(_env_file=None).supabase_storage_bucket == "documents"  # type: ignore[call-arg]
+
+    def test_reads_from_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SUPABASE_URL", "https://abcdefgh.supabase.co")
+        monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-key-not-real")
+        monkeypatch.setenv("SUPABASE_STORAGE_BUCKET", "uploads")
+
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+        assert settings.supabase_url == "https://abcdefgh.supabase.co"
+        assert settings.supabase_service_key == "test-key-not-real"
+        assert settings.supabase_storage_bucket == "uploads"
+
+    def test_a_trailing_slash_on_the_url_is_normalised(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Storage paths are appended to this, so a trailing slash would produce `//`."""
+        monkeypatch.setenv("SUPABASE_URL", "https://abcdefgh.supabase.co/")
+
+        assert Settings(_env_file=None).supabase_url == "https://abcdefgh.supabase.co"  # type: ignore[call-arg]
+
+    def test_a_blank_url_means_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Blanking a value is how people turn one off; it must not become a host."""
+        monkeypatch.setenv("SUPABASE_URL", "   ")
+
+        assert Settings(_env_file=None).supabase_url is None  # type: ignore[call-arg]
+
+    def test_a_url_without_a_scheme_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Fails at startup rather than at the first upload."""
+        monkeypatch.setenv("SUPABASE_URL", "abcdefgh.supabase.co")
+
+        with pytest.raises(PydanticValidationError, match="supabase_url must start with"):
+            Settings(_env_file=None)  # type: ignore[call-arg]
+
+
 def test_no_secret_has_a_real_default() -> None:
     """A secret must never carry a usable default value baked into source."""
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
     assert settings.anthropic_api_key is None
+    assert settings.supabase_service_key is None

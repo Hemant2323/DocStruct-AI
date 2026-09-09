@@ -48,6 +48,13 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setenv("STORAGE_DIR", str(storage_path))
+    # Pinned for the same reason the AI variables below are, and with more at stake: no
+    # test overrides `get_file_storage`, so a Supabase backend left configured in a
+    # developer's own `.env` would silently push the whole suite onto the network and
+    # into a real bucket. Tests write to `tmp_path`, always.
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
+    monkeypatch.setenv("SUPABASE_URL", "")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "")
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
     monkeypatch.setenv("AI_PROVIDER", "claude")
     monkeypatch.setenv("GEMINI_API_KEY", "")

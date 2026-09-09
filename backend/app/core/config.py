@@ -65,8 +65,36 @@ class Settings(BaseSettings):
     database_echo: bool = False
 
     # --- File storage ------------------------------------------------------
+    #: Which `FileStorage` implementation `app.api.deps.get_file_storage()` builds.
+    #: Defaults to "local" so existing behaviour is unchanged unless this is set.
+    #:
+    #: "supabase" is accepted here before the implementation exists, deliberately: the
+    #: setting and its test isolation land first so that the day the backend is written,
+    #: no test can reach a real bucket by accident.
+    storage_backend: str = "local"
+
+    #: Root directory for the "local" backend. Ignored by any other backend — the two
+    #: are alternatives, not layers.
     storage_dir: Path = PROJECT_ROOT / "storage"
     max_upload_size_mb: int = Field(default=25, ge=1, le=500)
+
+    # --- Supabase Storage ----------------------------------------------------
+    #: The project's base URL, e.g. https://abcdefgh.supabase.co — not the storage
+    #: endpoint itself, which is a path beneath it. Optional so the application still
+    #: starts without it, exactly like the AI provider keys.
+    supabase_url: str | None = None
+
+    #: The service-role key. REAL VALUE IN THE ENVIRONMENT ONLY.
+    #:
+    #: This key bypasses row-level security, so it is the most dangerous secret in the
+    #: project: server-side only, never returned by any endpoint, never logged, and never
+    #: sent to the browser.
+    supabase_service_key: str | None = None
+
+    #: Bucket that uploaded documents live in. Should be **private** — objects are
+    #: addressed by document UUID, but an unauthenticated public bucket would still make
+    #: every uploaded file readable by anyone who learns an id.
+    supabase_storage_bucket: str = "documents"
 
     # --- Ingestion limits --------------------------------------------------
     # Resource ceilings. A malicious or merely enormous file must fail fast with a
@@ -264,6 +292,39 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"anthropic_base_url must start with http:// or https://, got {value!r}"
             )
+        return cleaned
+
+    @field_validator("storage_backend")
+    @classmethod
+    def _validate_storage_backend(cls, value: str) -> str:
+        """Reject an unknown storage backend at startup rather than at the first upload.
+
+        The same shape as :meth:`_validate_ai_provider`, and for the same reason:
+        ``get_file_storage()`` branches on this value, so a typo caught here is a clear
+        startup failure rather than a confusing error the first time someone uploads a
+        file — by which point the response has already been accepted.
+        """
+        valid = {"local", "supabase"}
+        normalized = value.strip().lower()
+        if normalized not in valid:
+            raise ValueError(f"storage_backend must be one of {sorted(valid)}, got {value!r}")
+        return normalized
+
+    @field_validator("supabase_url")
+    @classmethod
+    def _validate_supabase_url(cls, value: str | None) -> str | None:
+        """Normalise the project URL, and reject one that is obviously wrong.
+
+        Blank is treated as unset, matching :meth:`_validate_base_url`: emptying a value
+        in the environment is how people turn it off, and it should mean "not configured"
+        rather than "send requests to an empty host".
+        """
+        if value is None or not value.strip():
+            return None
+
+        cleaned = value.strip().rstrip("/")
+        if not cleaned.startswith(("http://", "https://")):
+            raise ValueError(f"supabase_url must start with http:// or https://, got {value!r}")
         return cleaned
 
     @field_validator("ai_provider")
