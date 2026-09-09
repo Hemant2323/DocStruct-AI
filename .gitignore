@@ -13,7 +13,11 @@ secrets/
 credentials.json
 
 # --- User data (uploaded documents are private and must never be committed) --
-storage/
+# Anchored with a leading slash: this is the STORAGE_DIR at the repository root and
+# nothing else. Unanchored, `storage/` matches a directory of that name at any depth —
+# which silently excluded `backend/app/storage/`, the entire FileStorage package, from
+# the repository. The same trap the `lib/` note below describes.
+/storage/
 uploads/
 data/
 !data/.gitkeep
